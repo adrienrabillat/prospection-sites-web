@@ -1,0 +1,149 @@
+# Empreintes de CMS / constructeurs / frameworks.
+# Pour chaque outil, une seule correspondance suffit :
+#   html      : morceaux de texte cherchés dans le code HTML (sans tenir compte des majuscules)
+#   entetes   : préfixes de noms d'en-têtes HTTP (ex. "x-wix-")
+#   generator : expression régulière cherchée dans <meta name="generator">
+#   gamme     : bas (constructeur grand public), standard, moderne (site récent / sur mesure soigné)
+# L'ordre compte : le premier outil reconnu gagne (les frameworks sont testés en dernier).
+
+cms:
+  WordPress:
+    html: ["/wp-content/", "/wp-includes/", "/wp-json/"]
+    generator: "wordpress"
+    gamme: standard
+  Wix:
+    html: ["static.wixstatic.com", "static.parastorage.com"]
+    entetes: ["x-wix-"]
+    generator: "wix\\.com"
+    gamme: bas
+  Squarespace:
+    html: ["static1.squarespace.com", "squarespace-cdn.com"]
+    generator: "squarespace"
+    gamme: bas
+  Shopify:
+    html: ["cdn.shopify.com", "myshopify.com"]
+    entetes: ["x-shopid", "x-shopify-"]
+    gamme: standard
+  Webflow:
+    html: ["data-wf-site", "data-wf-page", "assets.website-files.com", "cdn.prod.website-files.com"]
+    generator: "webflow"
+    gamme: moderne
+  Jimdo:
+    html: ["jimdo.com", "jimstatic.com", "jimdosite.com"]
+    gamme: bas
+  Joomla:
+    html: ["/media/jui/", "/media/system/js/", "com_content"]
+    generator: "joomla"
+    gamme: standard
+  Drupal:
+    html: ["/sites/default/files/", "drupal-settings-json", "Drupal.settings"]
+    entetes: ["x-drupal-"]
+    generator: "drupal"
+    gamme: standard
+  PrestaShop:
+    html: ["prestashop", "/modules/ps_"]
+    generator: "prestashop"
+    gamme: standard
+  Site123:
+    html: ["site123.com", "cdn-cms.f-static.net", "static.s123-cdn"]
+    gamme: bas
+  Google Sites:
+    html: ["sites.google.com", "gstatic.com/atari"]
+    gamme: bas
+  GoDaddy Website Builder:
+    html: ["img1.wsimg.com", "websites.godaddy.com"]
+    generator: "go daddy|godaddy|starfield"
+    gamme: bas
+  Duda:
+    html: ["dudaone", "multiscreensite.com", "dmcdn.net", "irp.cdn-website.com"]
+    gamme: bas
+  Framer:
+    html: ["framerusercontent.com", "framer.com/m/", "data-framer-"]
+    generator: "framer"
+    gamme: moderne
+  Weebly:
+    html: ["weebly.com", "editmysite.com"]
+    gamme: bas
+  e-monsite:
+    html: ["e-monsite.com", "emonsite"]
+    gamme: bas
+  Linkeo:
+    html: ["linkeo.com", "linkeo-"]
+    gamme: bas
+  Solocal (PagesJaunes):
+    html: ["solocalms", "site-solocal", "solocal.com/sites"]
+    gamme: bas
+  Typo3:
+    html: ["typo3temp", "typo3conf"]
+    generator: "typo3"
+    gamme: standard
+  Next.js:
+    html: ["__NEXT_DATA__", "/_next/static/"]
+    entetes: ["x-nextjs-"]
+    gamme: moderne
+  Nuxt:
+    html: ["__NUXT__", "/_nuxt/"]
+    gamme: moderne
+  Gatsby:
+    html: ["___gatsby"]
+    generator: "gatsby"
+    gamme: moderne
+  Astro:
+    html: ["astro-island", "/_astro/"]
+    generator: "astro"
+    gamme: moderne
+  Angular:
+    html: ["ng-version="]
+    gamme: moderne
+  React:
+    html: ["data-reactroot", "id=\"root\"></div>"]
+    gamme: moderne
+
+# Pages qui ne sont pas un vrai site (cherchées dans le HTML, sans tenir compte des majuscules)
+pages_parking:   # domaine parqué / à vendre / expiré -> « Domaine expiré / DNS absent »
+  - "domaine est à vendre"
+  - "domain is for sale"
+  - "this domain may be for sale"
+  - "buy this domain"
+  - "sedoparking"
+  - "parkingcrew"
+  - "bodis.com"
+  - "domain has expired"
+  - "domaine a expiré"
+  - "nom de domaine expiré"
+  - "this domain name has been registered"
+pages_par_defaut:  # hébergement sans contenu -> « Site cassé (page par défaut) »
+  - "site en construction"
+  - "site en cours de construction"
+  - "under construction"
+  - "<title>index of /"
+  - "it works!"
+  - "welcome to nginx"
+  - "apache2 ubuntu default page"
+  - "félicitations ! votre domaine a bien été créé"
+  - "votre site est en cours de création"
+  - "account suspended"
+  - "compte suspendu"
+
+# Constructeurs de pages WordPress (en plus du thème)
+page_builders:
+  Elementor: ["elementor"]
+  Divi: ["et_pb_", "/themes/divi/", "divi-"]
+  WPBakery: ["js_composer", "vc_row"]
+  Beaver Builder: ["fl-builder"]
+  Gutenberg / blocs: ["wp-block-"]
+  Avada: ["fusion-builder", "/themes/avada/"]
+
+# Prise de rendez-vous / réservation en ligne
+rendez_vous:
+  Doctolib: ["doctolib.fr"]
+  Planity: ["planity.com"]
+  Calendly: ["calendly.com"]
+  Treatwell: ["treatwell.fr"]
+  Booksy: ["booksy.com"]
+  Resalib: ["resalib.fr"]
+  Zenchef: ["zenchef"]
+  TheFork: ["thefork", "lafourchette"]
+  Google Agenda: ["calendar.google.com/calendar/appointments"]
+  Auto-école en ligne: ["ornikar", "stych", "en-voiture-simone"]
+  Texte « rendez-vous en ligne »: ["prendre rendez-vous en ligne", "prise de rendez-vous en ligne", "réserver en ligne", "reservez en ligne", "réservez en ligne"]

@@ -1,0 +1,94 @@
+# Réglages généraux de l'outil de prospection.
+
+# Durée de validité du cache local (jours). Au-delà, l'entreprise est réanalysée.
+cache_jours: 30
+
+# Exclusions à l'étape 1
+exclusions:
+  # Mots (entiers) qui signalent une franchise ou un réseau, cherchés dans le nom et l'enseigne.
+  franchises: [ecf, cer, stych, ornikar, "en voiture simone", "point s", speedy, midas, norauto,
+               feu vert, "carglass", "franck provost", "jean louis david", "dessange", "saint algue",
+               "camille albane", "mcdonald", "burger king", "kfc", "subway", "domino", "pizza hut",
+               "brioche doree", "la mie caline", "orpi", "century 21", "laforet", "guy hoquet",
+               "stephane plaza", "era immobilier", "foncia", "nexity", "defim", "5 oceans",
+               "paris nautique", "french boat", "eurest", "sodexo", "elior", "compass"]
+  # Au-delà de ce nombre d'établissements ouverts, l'entreprise est considérée comme un réseau.
+  max_etablissements: 5
+
+# Débit des APIs : délai minimum entre deux requêtes vers le même hôte (secondes)
+debit:
+  recherche-entreprises.api.gouv.fr: 0.2   # limite officielle : 7 req/s par IP
+  geo.api.gouv.fr: 0.1
+  serpapi.com: 1.5                          # plan gratuit : 50 requêtes / heure
+  overpass-api.de: 5.0                      # instance publique OpenStreetMap : usage raisonnable
+  api.search.brave.com: 1.1                 # 1 req/s
+  www.googleapis.com: 1.0
+  defaut: 1.0                               # sites des entreprises : on reste poli
+
+# Domaines ignorés dans les résultats de moteur de recherche (annuaires, réseaux sociaux, plateformes)
+annuaires: [pagesjaunes.fr, societe.com, pappers.fr, infogreffe.fr, facebook.com, instagram.com,
+            linkedin.com, doctolib.fr, tripadvisor.fr, tripadvisor.com, verif.com, manageo.fr,
+            annuaire-entreprises.data.gouv.fr, data.gouv.fr, google.com, google.fr, yelp.fr, yelp.com,
+            mappy.com, justacote.com, 118712.fr, 118000.fr, kompass.com, infonet.fr, corporama.com,
+            societeinfo.com, lefigaro.fr, l-entreprise.com, vroomvroom.fr, ornikar.com, stych.fr,
+            planity.com, treatwell.fr, thefork.fr, ubereats.com, deliveroo.fr, youtube.com, x.com,
+            twitter.com, tiktok.com, wikipedia.org, waze.com, apple.com, starofservice.com,
+            habitatpresto.com, travaux.com, lesbonsartisans.fr, hoodspot.fr, cylex-france.fr,
+            annuaire.laposte.fr, bottin.fr, sirene.fr, insee.fr, entreprises.lefigaro.fr, procedurecollective.fr]
+
+# Délais réseau (secondes)
+timeout_api: 20
+timeout_site: 12
+
+# SerpAPI : plafond mensuel d'appels réels (le plan gratuit en donne 250)
+serpapi:
+  plafond_mensuel: 200
+
+# Brave Search : plafond mensuel (5 $ offerts ≈ 1 000 requêtes)
+brave:
+  plafond_mensuel: 900
+
+# Devinette de domaine
+devinette:
+  extensions: [fr, com]
+  max_domaines: 24
+
+# Seuils de « site daté »
+date:
+  copyright_ancien_annees: 3      # copyright plus vieux que (année courante - 3)
+  jquery_ancien_avant: "3.0"
+  temps_reponse_lent: 3.0         # secondes
+  pagespeed_mauvais: 50           # score mobile < 50
+
+# Score du prospect (sur 100)
+score:
+  statut:
+    Aucun site: 85
+    Facebook / Instagram seulement: 85
+    Site cassé: 80
+    Domaine expiré / DNS absent: 80
+    Site actif: 25
+  # Points ajoutés à un site actif pour chaque signal de site daté
+  signaux:
+    pas_https: 15
+    pas_mobile: 20
+    copyright_ancien: 10
+    jquery_ancien: 5
+    flash: 15
+    tableaux: 10
+    pas_de_title: 5
+    pas_de_meta_description: 5
+    lent: 5
+    pagespeed_mauvais: 10
+  # Points ajoutés selon la gamme du CMS (voir empreintes.yaml)
+  gamme:
+    bas: -10
+    standard: 0
+    moderne: -20
+  bonus:
+    note_google_min: 4.3
+    nb_avis_min: 30
+    bonne_reputation: 10
+    creation_recente_annees: 3
+    creation_recente: 5
+    pas_de_rdv_en_ligne: 3

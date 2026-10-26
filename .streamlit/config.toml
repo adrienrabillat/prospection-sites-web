@@ -1,0 +1,38 @@
+# Interface accessible uniquement depuis cet ordinateur (elle permet de saisir des clés d'API)
+[server]
+address = "localhost"
+port = 8501
+headless = false
+
+[browser]
+gatherUsageStats = false
+
+[client]
+toolbarMode = "minimal"   # masque le bouton « Deploy » et le menu développeur
+
+# Thème sombre anthracite / slate, accent indigo doux
+[theme]
+base = "dark"
+primaryColor = "#7C8FD9"
+backgroundColor = "#1A1D23"
+secondaryBackgroundColor = "#23272F"
+textColor = "#E3E6EB"
+linkColor = "#A3B2EE"
+linkUnderline = false
+borderColor = "#323843"
+showWidgetBorder = true
+dataframeBorderColor = "#2C313A"
+dataframeHeaderBackgroundColor = "#20242B"
+baseRadius = "0.6rem"
+buttonRadius = "0.5rem"
+baseFontSize = 15
+font = "Inter:https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap"
+headingFontWeights = 600
+# Couleurs sémantiques adoucies (alertes, barres de progression, badges)
+redColor = "#E07A7F"
+orangeColor = "#D9A066"
+yellowColor = "#D6C27E"
+greenColor = "#7FB98F"
+blueColor = "#7C8FD9"
+violetColor = "#A58BD9"
+grayColor = "#8A93A3"

@@ -1,0 +1,14 @@
+# Données de prospection, clés et caches : restent en local
+.env
+data/
+*.xlsx
+.venv/
+cache.sqlite
+__pycache__/
+*.pyc
+ScrapperGbusiness.ipynb
+suivi.sqlite
+oppositions.csv
+PROMPT_PROSPECTION.md
+.streamlit/secrets.toml
+.DS_Store
