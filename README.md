@@ -2,6 +2,8 @@
 
 Trouve les entreprises d'une activité et d'une zone qui n'ont **pas de site**, **seulement une page Facebook / Instagram**, ou un site **cassé, expiré ou daté**, puis les classe par score dans un fichier Excel.
 
+![Interface (noms d'entreprises et de dirigeants floutés)](docs/apercu.jpg)
+
 > **Projet en cours.** Premier jet fonctionnel de bout en bout (ligne de commande et interface Streamlit), encore à affiner. Piste suivante : ajouter de l'IA, par exemple pour qualifier les prospects ou préparer un premier message.
 >
 > Les fichiers de prospects (`data/`), le cache, le suivi et les clés (`.env`) restent en local et ne sont pas versionnés.
