@@ -48,6 +48,21 @@ serpapi:
 brave:
   plafond_mensuel: 900
 
+# Agent IA de qualification (clé ANTHROPIC_API_KEY) : vérifie chaque prospect sur le web et rend un verdict
+ia:
+  modele: claude-sonnet-5-5
+  effort: medium                 # low | medium | high : profondeur de réflexion (et coût)
+  score_min: 40                  # seuls les prospects dont le score des règles atteint ce seuil sont envoyés à l'IA
+  parallele: 4                   # entreprises qualifiées en même temps
+  max_recherches: 5              # recherches web par entreprise (10 $ / 1 000 recherches)
+  max_pages: 4                   # pages ouvertes par entreprise
+  budget_mensuel_usd: 20         # plafond de dépense IA par mois, compté dans le cache
+  cout_estime_usd: 0.10          # estimation par entreprise avant la première qualification (ensuite : moyenne réelle)
+  validite_jours: 180            # un verdict est refait au-delà
+  # Tarifs de claude-sonnet-5-5 (octobre 2026), pour estimer la dépense
+  prix_par_million: {entree: 2.0, sortie: 10.0, cache_ecriture: 2.5, cache_lecture: 0.2}
+  prix_recherche: 0.01
+
 # Devinette de domaine
 devinette:
   extensions: [fr, com]

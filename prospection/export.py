@@ -9,12 +9,14 @@ from openpyxl.utils import get_column_letter
 from .score import statut_court
 
 COLONNES = [  # (titre, largeur)
-    ("Score", 7), ("Nom", 30), ("Enseigne", 24), ("Activité", 26), ("Adresse", 36), ("CP", 7), ("Ville", 16),
+    ("Score", 7), ("IA", 11), ("Nom", 30), ("Enseigne", 24), ("Activité", 26), ("Adresse", 36), ("CP", 7), ("Ville", 16),
     ("Téléphone", 16), ("E-mail", 26), ("Dirigeant", 26), ("Date de création", 12), ("Effectif", 16),
     ("Statut web", 26), ("URL", 32), ("Source du site", 18), ("Confiance", 10), ("CMS", 16), ("Version", 9),
     ("HTTPS", 7), ("Mobile", 7), ("Copyright", 9), ("PageSpeed", 10), ("Note Google", 8), ("Nb avis", 8),
     ("SIREN", 11), ("SIRET", 16), ("Date d'analyse", 12), ("Signaux de site daté", 40), ("Thème / builder", 22),
     ("RDV en ligne", 18), ("Formulaire", 10), ("Preuve du site", 30), ("Franchise / réseau", 14), ("Opposition", 12),
+    ("Présence web (IA)", 24), ("Site vérifié (IA)", 32), ("Entreprise active (IA)", 11), ("Raison (IA)", 50),
+    ("Angle d'approche (IA)", 50), ("Constat du site (IA)", 40), ("Score des règles", 9),
     ("Suivi", 14), ("Notes", 40),
 ]
 
@@ -37,14 +39,29 @@ def oui_non(valeur):
     return "" if valeur is None else ("Oui" if valeur else "Non")
 
 
+def verdict_ia(p):
+    """« Qualifié » / « Écarté » selon l'agent IA, ou chaîne vide si le prospect n'a pas été qualifié."""
+    ia = p.get("ia")
+    return "" if not ia else ("Qualifié" if ia["qualifie"] else "Écarté")
+
+
+def telephone(p):
+    s = p["site"]
+    return s.get("telephone") or (s.get("google") or {}).get("telephone") or (p.get("ia") or {}).get("telephone", "")
+
+
+def email(p):
+    return (p.get("analyse") or {}).get("email") or (p.get("ia") or {}).get("email", "")
+
+
 def ligne_excel(p):
     """Transforme un prospect (dict produit par prospect.py) en valeurs dans l'ordre des colonnes."""
     f, s, a = p["fiche"], p["site"], p.get("analyse") or {}
-    g = s.get("google") or {}
+    g, ia = s.get("google") or {}, p.get("ia") or {}
     theme = " / ".join(x for x in (a.get("theme"), a.get("page_builder")) if x)
     return [
-        p["score"], f["nom"], f["enseigne"], f"{f['libelle_naf']} ({f['naf']})", f["adresse"], f["code_postal"],
-        f["ville"], s.get("telephone") or g.get("telephone") or "", a.get("email", ""), f["dirigeants"],
+        p["score"], verdict_ia(p), f["nom"], f["enseigne"], f"{f['libelle_naf']} ({f['naf']})", f["adresse"],
+        f["code_postal"], f["ville"], telephone(p), email(p), f["dirigeants"],
         f["date_creation"], f["tranche_effectif"], s["statut"], s["url"], s["source"], s["confiance"],
         a.get("cms", ""), a.get("version", ""), oui_non(a.get("https")), oui_non(a.get("mobile")),
         a.get("copyright") or "", a.get("pagespeed") if a.get("pagespeed") is not None else "",
@@ -53,7 +70,10 @@ def ligne_excel(p):
         ", ".join(LIBELLES_SIGNAUX.get(x, x) for x in a.get("signaux", [])), theme,
         a.get("rdv_en_ligne", ""), oui_non(a.get("formulaire")) if a else "", s.get("preuve", ""),
         (s.get("franchise") or "").upper(),
-        "OUI — ne pas contacter" if p["opposition"] else "", p.get("suivi", ""), p.get("notes", ""),
+        "OUI — ne pas contacter" if p["opposition"] else "",
+        ia.get("presence_web", ""), ia.get("url_site", ""), ia.get("entreprise_active", ""), ia.get("raison", ""),
+        ia.get("angle_approche", ""), ia.get("constat_site", ""), p.get("score_regles", p["score"]),
+        p.get("suivi", ""), p.get("notes", ""),
     ]
 
 
@@ -72,9 +92,10 @@ def _onglet_prospects(feuille, prospects):
         score = feuille.cell(row=rang, column=index["Score"])
         score.fill = CHAUD if p["score"] >= 70 else TIEDE if p["score"] >= 45 else FROID
         score.font = Font(bold=True)
-        url = feuille.cell(row=rang, column=index["URL"])
-        if url.value:
-            url.hyperlink, url.font = url.value, LIEN
+        for colonne in ("URL", "Site vérifié (IA)"):
+            url = feuille.cell(row=rang, column=index[colonne])
+            if url.value:
+                url.hyperlink, url.font = url.value, LIEN
         siren = feuille.cell(row=rang, column=index["SIREN"])
         siren.hyperlink = f"https://annuaire-entreprises.data.gouv.fr/entreprise/{siren.value}"
         siren.font = LIEN
@@ -82,7 +103,7 @@ def _onglet_prospects(feuille, prospects):
             for cellule in feuille[rang]:
                 cellule.font = GRIS
 
-    feuille.freeze_panes = "C2"
+    feuille.freeze_panes = "D2"
     feuille.auto_filter.ref = feuille.dimensions
     feuille.row_dimensions[1].height = 32
 
@@ -91,6 +112,8 @@ def _onglet_resume(feuille, prospects, criteres):
     gras = Font(bold=True)
     feuille.append(["Recherche", criteres])
     feuille.append(["Entreprises analysées", len(prospects)])
+    feuille.append(["Qualifiées par l'IA", sum(verdict_ia(p) == "Qualifié" for p in prospects)])
+    feuille.append(["Écartées par l'IA", sum(verdict_ia(p) == "Écarté" for p in prospects)])
     feuille.append([])
 
     feuille.append(["Statut web", "Nombre"])
@@ -108,14 +131,14 @@ def _onglet_resume(feuille, prospects, criteres):
         feuille.append([nom, nombre])
     feuille.append([])
 
-    feuille.append(["Top 20", "Score", "Statut web", "Ville", "Téléphone", "URL"])
+    feuille.append(["Top 20", "Score", "IA", "Statut web", "Ville", "Téléphone", "URL"])
     for cellule in feuille[feuille.max_row]:
         cellule.font = gras
     for p in [p for p in prospects if not p["opposition"]][:20]:
         s = p["site"]
-        feuille.append([p["fiche"]["enseigne"] or p["fiche"]["nom"], p["score"], s["statut"], p["fiche"]["ville"],
-                        s.get("telephone") or (s.get("google") or {}).get("telephone") or "", s["url"]])
-    for colonne, largeur in zip("ABCDEF", (36, 10, 28, 18, 18, 40)):
+        feuille.append([p["fiche"]["enseigne"] or p["fiche"]["nom"], p["score"], verdict_ia(p), s["statut"],
+                        p["fiche"]["ville"], telephone(p), s["url"] or (p.get("ia") or {}).get("url_site", "")])
+    for colonne, largeur in zip("ABCDEFG", (36, 10, 11, 28, 18, 18, 40)):
         feuille.column_dimensions[colonne].width = largeur
 
 

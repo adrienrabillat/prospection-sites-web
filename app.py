@@ -11,9 +11,9 @@ import pandas as pd
 import streamlit as st
 
 import prospect
-from prospection import cache, oppositions, suivi
+from prospection import agent_ia, cache, oppositions, suivi
 from prospection.config import ACTIVITES, CONFIG, DOSSIER_DATA, cle, enregistrer_cle
-from prospection.export import LIBELLES_SIGNAUX, exporter
+from prospection.export import LIBELLES_SIGNAUX, email, exporter, telephone, verdict_ia
 from prospection.reseau import ErreurAPI, appel_api
 
 st.set_page_config(page_title="Prospection", page_icon=":material/travel_explore:", layout="wide")
@@ -70,17 +70,21 @@ def charger_prospects():
 def en_tableau(prospects):
     lignes = []
     for p in prospects:
-        f, s, a = p["fiche"], p["site"], p.get("analyse") or {}
+        f, s, a, ia = p["fiche"], p["site"], p.get("analyse") or {}, p.get("ia") or {}
         lignes.append({
             "SIREN_cle": f["siren"],
             "Score": p["score"],
+            "IA": {"Qualifié": "✅ Qualifié", "Écarté": "❌ Écarté"}.get(verdict_ia(p), ""),
             "Nom": f["enseigne"] or f["nom"],
             "Ville": f["ville"],
             "Activité": f["libelle_naf"],
             "Statut web": s["statut"],
-            "URL": s["url"],
-            "Téléphone": s.get("telephone") or (s.get("google") or {}).get("telephone") or "",
-            "E-mail": a.get("email", ""),
+            "Présence web (IA)": ia.get("presence_web", ""),
+            "Raison (IA)": ia.get("raison", ""),
+            "Angle d'approche (IA)": ia.get("angle_approche", ""),
+            "URL": s["url"] or ia.get("url_site", ""),
+            "Téléphone": telephone(p),
+            "E-mail": email(p),
             "Dirigeant": f["dirigeants"],
             "Confiance": s["confiance"],
             "Franchise": (s.get("franchise") or "").upper(),
@@ -92,8 +96,9 @@ def en_tableau(prospects):
             "Suivi": suivi.OPPOSITION if p["opposition"] else p.get("suivi", ""),
             "Notes": p.get("notes", ""),
         })
-    colonnes = ["SIREN_cle", "Score", "Nom", "Ville", "Statut web", "Téléphone", "Suivi", "Notes", "URL", "E-mail",
-                "Dirigeant", "Activité", "Confiance", "Franchise", "CMS", "Signaux", "Création", "SIREN", "SIRET"]
+    colonnes = ["SIREN_cle", "Score", "IA", "Nom", "Ville", "Statut web", "Présence web (IA)", "Téléphone", "Suivi",
+                "Notes", "Raison (IA)", "Angle d'approche (IA)", "URL", "E-mail", "Dirigeant", "Activité", "Confiance",
+                "Franchise", "CMS", "Signaux", "Création", "SIREN", "SIRET"]
     return pd.DataFrame(lignes, columns=colonnes).sort_values("Score", ascending=False).set_index("SIREN_cle")
 
 
@@ -103,12 +108,50 @@ CONFIG_COLONNES = {
     "SIREN": st.column_config.LinkColumn("SIREN", display_text=r".*/entreprise/(\d+)", width="small"),
     "Suivi": st.column_config.SelectboxColumn("Suivi", options=suivi.ETATS, width="medium"),
     "Notes": st.column_config.TextColumn("Notes", width="large"),
+    "Raison (IA)": st.column_config.TextColumn("Raison (IA)", width="large"),
+    "Angle d'approche (IA)": st.column_config.TextColumn("Angle d'approche (IA)", width="large"),
 }
 
 
 # --- Onglet : réglages ------------------------------------------------------------------------
 
+def reglage_anthropic():
+    with st.container(border=True, key="reglages_ia"):
+        st.subheader(":material/smart_toy: Clé Anthropic (agent IA)")
+        st.caption(f"L'agent ({agent_ia.MODELE}) vérifie chaque prospect sur le web et rend un verdict. Payant à "
+                   "l'usage : tokens + 10 $ pour 1 000 recherches web. Crée ta clé sur "
+                   "[platform.claude.com](https://platform.claude.com/settings/keys). "
+                   "Elle est enregistrée uniquement dans le fichier `.env` de ce dossier, sur ton ordinateur.")
+
+        actuelle = cle("ANTHROPIC_API_KEY")
+        if actuelle:
+            st.success(f"Clé enregistrée : `{masquer(actuelle)}`", icon=":material/check_circle:")
+
+        with st.form("cle_anthropic", clear_on_submit=True, border=False):
+            nouvelle = st.text_input("Nouvelle clé Anthropic", type="password", placeholder="sk-ant-…")
+            envoyer = st.form_submit_button("Enregistrer et tester", type="primary", icon=":material/verified:")
+            if envoyer and nouvelle.strip():
+                erreur = agent_ia.tester_cle(nouvelle.strip())
+                if erreur:
+                    st.error(f"Clé refusée par Anthropic : {erreur}", icon=":material/error:")
+                else:
+                    enregistrer_cle("ANTHROPIC_API_KEY", nouvelle)
+                    st.rerun()
+
+        if actuelle:
+            budget = CONFIG["ia"]["budget_mensuel_usd"]
+            c1, c2, c3 = st.columns(3, gap="large")
+            c1.metric("Dépense IA ce mois-ci", f"{agent_ia.depense_du_mois():.2f} $ / {budget} $", border=True,
+                      help="Estimée d'après les tokens et les recherches facturés. Plafond dans config.yaml (ia).")
+            c2.metric("Coût moyen par entreprise", f"{agent_ia.cout_moyen():.3f} $", border=True)
+            c3.metric("Entreprises qualifiées", len(cache.tout("qualifications")), border=True)
+            if st.button("Supprimer la clé Anthropic", icon=":material/delete:"):
+                enregistrer_cle("ANTHROPIC_API_KEY", "")
+                st.rerun()
+
+
 def onglet_reglages():
+    reglage_anthropic()
     with st.container(border=True, key="reglages"):
         st.subheader(":material/key: Clé SerpAPI (Google Maps)")
         st.caption("Plan gratuit : 250 recherches par mois, une par entreprise analysée. "
@@ -163,7 +206,7 @@ def onglet_reglages():
 # --- Onglet : nouvelle recherche --------------------------------------------------------------
 
 def onglet_recherche():
-    serpapi = cle("SERPAPI_KEY")
+    serpapi, ia = cle("SERPAPI_KEY"), cle("ANTHROPIC_API_KEY")
     if not serpapi:
         st.info("Pas de clé SerpAPI : la recherche utilisera seulement OpenStreetMap et la devinette de domaine. "
                 "Ajoute ta clé dans l'onglet **Réglages** pour des résultats plus fiables.", icon=":material/info:")
@@ -175,17 +218,23 @@ def onglet_recherche():
         c1, c2, c3 = st.columns([2, 1, 1], gap="large")
         villes = c1.text_input("Ville(s)", placeholder="ex. Clichy, Levallois-Perret")
         departements = c2.text_input("Ou département(s)", placeholder="ex. 92")
-        limite = c3.number_input("Nombre max d'entreprises", min_value=1, max_value=2000, value=20, step=10)
-        c1, c2, c3 = st.columns(3, gap="large")
+        limite = c3.number_input("Nombre max d'entreprises", min_value=1, max_value=10_000, value=100, step=50)
+        c1, c2, c3, c4 = st.columns(4, gap="large")
         avec_serpapi = c1.toggle("Google Maps (SerpAPI)", value=bool(serpapi), disabled=not serpapi)
-        avec_pagespeed = c2.toggle("Score PageSpeed", value=False, disabled=not cle("PAGESPEED_API_KEY"))
-        rafraichir = c3.toggle("Réanalyser les entreprises déjà vues", value=False)
+        avec_ia = c2.toggle("Qualification par l'IA", value=bool(ia), disabled=not ia,
+                            help=f"Seuls les prospects dont le score des règles atteint {CONFIG['ia']['score_min']} "
+                                 "sont envoyés à l'IA (réglable dans config.yaml)")
+        avec_pagespeed = c3.toggle("Score PageSpeed", value=False, disabled=not cle("PAGESPEED_API_KEY"))
+        rafraichir = c4.toggle("Réanalyser les entreprises déjà vues", value=False)
         lancer = st.form_submit_button("Lancer la recherche", type="primary", icon=":material/search:")
 
     if serpapi and avec_serpapi:
         reste = CONFIG["serpapi"]["plafond_mensuel"] - cache.compteur("serpapi")
         st.caption(f"Jusqu'à {limite} recherches SerpAPI (une par nouvelle entreprise ; les entreprises déjà vues "
                    f"sont en cache). Reste ce mois-ci selon le plafond de l'outil : {reste}.")
+    if ia and avec_ia:
+        st.caption(f"IA : ≈ {agent_ia.cout_moyen():.2f} $ par prospect vérifié (déjà qualifiés : gratuits). "
+                   f"Dépense du mois : {agent_ia.depense_du_mois():.2f} $ / {CONFIG['ia']['budget_mensuel_usd']} $.")
 
     if not lancer:
         return
@@ -196,7 +245,8 @@ def onglet_recherche():
     args = argparse.Namespace(
         activite=activites, naf=liste(naf), ville=liste(villes), cp=[], departement=liste(departements),
         mots_cles=None, limite=int(limite), max_etablissements=None, sans_serpapi=not avec_serpapi,
-        sans_brave=False, sans_pagespeed=not avec_pagespeed, rafraichir=rafraichir)
+        sans_brave=False, sans_pagespeed=not avec_pagespeed, rafraichir=rafraichir, sans_ia=not avec_ia,
+        ia_score_min=None)
     if not (args.activite or args.naf):
         st.error("Choisis au moins une activité ou un code NAF.", icon=":material/error:")
         return
@@ -214,9 +264,13 @@ def onglet_recherche():
         apercu.dataframe(en_tableau(trouves)[["Score", "Nom", "Ville", "Statut web", "URL"]],
                          column_config=CONFIG_COLONNES, width="stretch", hide_index=True)
 
+    def progression_ia(i, total, p, erreur):
+        barre.progress(i / total, text=f"IA {i}/{total} — {p['fiche']['enseigne'] or p['fiche']['nom']}"
+                                       + (f" ⚠️ {erreur}" if erreur else ""))
+
     try:
         with st.spinner("Analyse en cours (OpenStreetMap peut prendre 30 s à 1 min)…"):
-            prospects, chemin = prospect.executer(args, progression)
+            prospects, chemin = prospect.executer(args, progression, progression_ia)
     except SystemExit as erreur:  # activité ou ville inconnue
         st.error(str(erreur), icon=":material/error:")
         return
@@ -229,8 +283,10 @@ def onglet_recherche():
         st.warning("Aucune entreprise trouvée avec ces critères.", icon=":material/search_off:")
         return
     chauds = sum(p["score"] >= 70 for p in prospects)
-    st.success(f"{len(prospects)} entreprises analysées, dont {chauds} prospects chauds (score ≥ 70). "
-               "Retrouve-les dans l'onglet **Prospects**.", icon=":material/task_alt:")
+    qualifies = sum(verdict_ia(p) == "Qualifié" for p in prospects)
+    st.success(f"{len(prospects)} entreprises analysées, dont {chauds} prospects chauds (score ≥ 70)"
+               + (f" et {qualifies} qualifiés par l'IA" if any(p.get("ia") for p in prospects) else "")
+               + ". Retrouve-les dans l'onglet **Prospects**.", icon=":material/task_alt:")
     st.download_button("Télécharger l'Excel de cette recherche", chemin.read_bytes(), file_name=chemin.name,
                        icon=":material/download:")
 
@@ -239,11 +295,13 @@ def onglet_recherche():
 
 def indicateurs(tableau):
     actifs = tableau[(tableau["Suivi"] != suivi.OPPOSITION) & (tableau["Franchise"] == "")]
-    c1, c2, c3, c4 = st.columns(4, gap="large")
+    c1, c2, c3, c4, c5 = st.columns(5, gap="large")
     c1.metric("Entreprises analysées", len(actifs), border=True)
     c2.metric("Prospects chauds (≥ 70)", int((actifs["Score"] >= 70).sum()), border=True)
-    c3.metric("Sans site", int((actifs["Statut web"] == "Aucun site").sum()), border=True)
-    c4.metric("À relancer", int((actifs["Suivi"] == "À relancer").sum()), border=True)
+    c3.metric("Qualifiés par l'IA", int((actifs["IA"] == "✅ Qualifié").sum()), border=True,
+              help=f"{int((actifs['IA'] != '').sum())} entreprises vérifiées par l'IA")
+    c4.metric("Sans site", int((actifs["Statut web"] == "Aucun site").sum()), border=True)
+    c5.metric("À relancer", int((actifs["Suivi"] == "À relancer").sum()), border=True)
 
 
 def onglet_prospects():
@@ -265,6 +323,7 @@ def onglet_prospects():
         texte = c2.text_input("Recherche", placeholder="Nom, dirigeant, notes…", icon=":material/search:")
         masquer_opposition = c3.toggle("Masquer les oppositions", value=True)
         masquer_franchises = c3.toggle("Masquer les franchises", value=True)
+        seulement_qualifies = c3.toggle("Seulement les qualifiés par l'IA", value=False)
 
     vue = tableau[tableau["Score"] >= score_min]
     if villes:
@@ -279,6 +338,8 @@ def onglet_prospects():
         vue = vue[vue["Suivi"] != suivi.OPPOSITION]
     if masquer_franchises:
         vue = vue[vue["Franchise"] == ""]
+    if seulement_qualifies:
+        vue = vue[vue["IA"] == "✅ Qualifié"]
     if texte:
         champs = vue["Nom"] + " " + vue["Dirigeant"] + " " + vue["Notes"]
         vue = vue[champs.str.contains(texte, case=False, regex=False)]
@@ -308,6 +369,41 @@ def onglet_prospects():
         exporter(selection, chemin, "Sélection depuis l'interface")
         c2.download_button("Exporter la sélection", chemin.read_bytes(), file_name=chemin.name,
                            icon=":material/download:", width="stretch")
+        qualifier_selection(selection)
+
+
+def qualifier_selection(selection):
+    """Envoie à l'agent IA les entreprises de la vue filtrée qui n'ont pas encore été qualifiées."""
+    if not cle("ANTHROPIC_API_KEY"):
+        return
+    candidats = [p for p in selection if agent_ia.a_qualifier(p, score_min=0)]
+    if not candidats:
+        return
+    with st.container(border=True):
+        st.subheader(":material/smart_toy: Qualifier avec l'IA")
+        c1, c2 = st.columns([1, 3], gap="large", vertical_alignment="bottom")
+        nombre = c1.number_input("Nombre d'entreprises", min_value=1, max_value=len(candidats),
+                                 value=min(len(candidats), 50), step=10)
+        c2.caption(f"{len(candidats)} entreprise(s) de la vue pas encore vérifiées par l'IA, par score décroissant. "
+                   f"Coût estimé : ≈ {nombre * agent_ia.cout_moyen():.2f} $ — dépense du mois : "
+                   f"{agent_ia.depense_du_mois():.2f} $ / {CONFIG['ia']['budget_mensuel_usd']} $.")
+        if not st.button("Lancer la qualification", type="primary", icon=":material/smart_toy:"):
+            return
+        barre = st.progress(0.0, text="L'agent cherche sur le web…")
+        erreurs = []
+
+        def progression(i, total, p, erreur):
+            if erreur:
+                erreurs.append(f"{p['fiche']['enseigne'] or p['fiche']['nom']} : {erreur}")
+            barre.progress(i / total, text=f"{i}/{total} — {p['fiche']['enseigne'] or p['fiche']['nom']}")
+
+        candidats.sort(key=lambda p: -p["score"])
+        qualifies = agent_ia.qualifier_lot(candidats[:int(nombre)], progression)
+        for erreur in erreurs[:10]:
+            st.warning(erreur, icon=":material/warning:")
+        st.toast(f"{qualifies} entreprise(s) qualifiée(s) par l'IA", icon=":material/check_circle:")
+        if not erreurs:
+            st.rerun()
 
 
 # --- Page -------------------------------------------------------------------------------------

@@ -11,7 +11,7 @@ Interface graphique : streamlit run app.py
 import argparse
 from datetime import date
 
-from prospection import cache, entreprises, oppositions, sites, suivi
+from prospection import agent_ia, cache, entreprises, oppositions, sites, suivi
 from prospection.analyse import analyser
 from prospection.config import CONFIG, DOSSIER_DATA, cle
 from prospection.export import exporter
@@ -32,6 +32,9 @@ def lire_arguments():
     p.add_argument("--sans-serpapi", action="store_true", help="ne pas consommer de crédits SerpAPI")
     p.add_argument("--sans-brave", action="store_true", help="ne pas utiliser Brave Search")
     p.add_argument("--sans-pagespeed", action="store_true", help="ne pas appeler PageSpeed Insights")
+    p.add_argument("--sans-ia", action="store_true", help="ne pas qualifier les prospects avec l'agent IA (payant)")
+    p.add_argument("--ia-score-min", type=int, help="score des règles minimum pour passer à l'IA "
+                                                    f"(défaut : {CONFIG['ia']['score_min']}, 0 = tous)")
     p.add_argument("--rafraichir", action="store_true", help="réanalyse les entreprises déjà en cache")
     p.add_argument("--opposition", metavar="SIREN", help="ajoute une entreprise à la liste d'opposition et quitte")
     p.add_argument("--motif", default="", help="motif de l'opposition (avec --opposition)")
@@ -63,14 +66,15 @@ def analyser_entreprise(fiche, args):
 
 
 def construire_prospect(fiche, resultat, liste_opposition):
-    """Assemble fiche + résultat d'analyse + suivi, et calcule le score."""
+    """Assemble fiche + résultat d'analyse + suivi + verdict de l'IA, et calcule le score."""
     opposition = fiche["siren"] in liste_opposition
     if opposition and resultat is None:
         resultat = {"site": {"statut": "Non analysé (opposition)", "url": "", "source": "", "confiance": "",
                              "preuve": "", "google": {}}, "analyse": None, "date_analyse": ""}
     prospect = {"fiche": fiche, **resultat, "opposition": opposition, **suivi.lire(fiche["siren"])}
-    prospect["score"] = 0 if opposition else calculer(fiche, resultat["site"], resultat["analyse"])
-    return prospect
+    prospect["score"] = prospect["score_regles"] = \
+        0 if opposition else calculer(fiche, resultat["site"], resultat["analyse"])
+    return agent_ia.appliquer(prospect, agent_ia.verdict(fiche["siren"]))
 
 
 def afficher_sources():
@@ -78,15 +82,46 @@ def afficher_sources():
     print("🔌 Sources : API Recherche d'entreprises ✓, OpenStreetMap ✓, devinette de domaine ✓"
           f", Google Maps (SerpAPI) {'✓' if serpapi else '✗ pas de clé'}"
           f", Brave {'✓' if cle('BRAVE_API_KEY') else '✗ pas de clé'}"
-          f", PageSpeed {'✓' if cle('PAGESPEED_API_KEY') else '✗ pas de clé'}")
+          f", PageSpeed {'✓' if cle('PAGESPEED_API_KEY') else '✗ pas de clé'}"
+          f", agent IA {'✓' if cle('ANTHROPIC_API_KEY') else '✗ pas de clé'}")
     if serpapi:
         print(f"   SerpAPI ce mois-ci : {cache.compteur('serpapi')} / {CONFIG['serpapi']['plafond_mensuel']} appels")
+    if cle("ANTHROPIC_API_KEY"):
+        print(f"   IA ce mois-ci : {agent_ia.depense_du_mois():.2f} $ / {CONFIG['ia']['budget_mensuel_usd']} $")
 
 
-def executer(args, progression=None):
+def qualifier_par_ia(prospects, args, progression=None):
+    """Étape 3 : l'agent IA vérifie sur le web les prospects retenus par les règles."""
+    if args.sans_ia or not cle("ANTHROPIC_API_KEY"):
+        return
+    a_faire = [p for p in prospects if agent_ia.a_qualifier(p, args.ia_score_min)]
+    deja = sum(1 for p in prospects if p.get("ia"))
+    print(f"\n③ Qualification par l'IA ({agent_ia.MODELE}) : {len(a_faire)} entreprise(s) à vérifier, "
+          f"≈ {len(a_faire) * agent_ia.cout_moyen():.2f} $" + (f", {deja} déjà qualifiée(s)" if deja else ""))
+
+    def afficher(i, total, p, erreur):
+        nom = (p["fiche"]["enseigne"] or p["fiche"]["nom"])[:38]
+        if erreur:
+            print(f"  [{i}/{total}] {nom:38} ⚠️  {erreur}")
+        else:
+            v = p["ia"]
+            print(f"  [{i}/{total}] {nom:38} {v['score']:3}  {'✅' if v['qualifie'] else '❌'} "
+                  f"{v['presence_web']} — {v['raison'][:90]}")
+        if progression:
+            progression(i, total, p, erreur)
+
+    try:
+        agent_ia.qualifier_lot(a_faire, afficher)
+    except KeyboardInterrupt:
+        print("\n⏸️  Qualification interrompue : les verdicts déjà obtenus sont gardés.")
+    print(f"  💶 Dépense IA ce mois-ci : {agent_ia.depense_du_mois():.2f} $ / {CONFIG['ia']['budget_mensuel_usd']} $")
+
+
+def executer(args, progression=None, progression_ia=None):
     """Lance une recherche complète et renvoie (prospects, chemin de l'Excel).
 
-    `progression(i, total, prospect)` est appelée après chaque entreprise (utilisée par l'interface).
+    `progression(i, total, prospect)` est appelée après chaque entreprise analysée, et
+    `progression_ia(i, total, prospect, erreur)` après chaque qualification par l'IA (utilisées par l'interface).
     """
     if args.max_etablissements is not None:
         CONFIG["exclusions"]["max_etablissements"] = args.max_etablissements
@@ -125,6 +160,7 @@ def executer(args, progression=None):
     if not prospects:
         print("Aucune entreprise à exporter.")
         return prospects, None
+    qualifier_par_ia(prospects, args, progression_ia)
     criteres = " ".join(f'--{k.replace("_", "-")} "{x}"' for k, v in vars(args).items()
                         if v and k in ("activite", "naf", "ville", "cp", "departement", "mots_cles", "limite")
                         for x in (v if isinstance(v, list) else [v]))

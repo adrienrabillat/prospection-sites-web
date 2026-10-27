@@ -5,7 +5,8 @@ Tables :
 - analyses    : résultat des étapes 2 et 3 (site trouvé + analyse), par SIREN
 - urls        : réponse d'une URL testée (statut, HTML…), par URL
 - api         : réponses d'APIs externes (SerpAPI, Brave, PageSpeed), par requête
-- compteurs   : nombre d'appels réels par API et par mois (quotas)
+- qualifications : verdict de l'agent IA, par SIREN (payant : à garder)
+- compteurs   : nombre d'appels réels par API et par mois (quotas), dépense IA en micro-dollars
 """
 
 import json
@@ -27,6 +28,7 @@ def connexion():
             CREATE TABLE IF NOT EXISTS analyses (siren TEXT PRIMARY KEY, donnees TEXT, maj REAL);
             CREATE TABLE IF NOT EXISTS urls (url TEXT PRIMARY KEY, donnees TEXT, maj REAL);
             CREATE TABLE IF NOT EXISTS api (cle TEXT PRIMARY KEY, donnees TEXT, maj REAL);
+            CREATE TABLE IF NOT EXISTS qualifications (siren TEXT PRIMARY KEY, donnees TEXT, maj REAL);
             CREATE TABLE IF NOT EXISTS compteurs (api TEXT, mois TEXT, nb INTEGER, PRIMARY KEY (api, mois));
         """)
     return _connexion
@@ -35,7 +37,7 @@ def connexion():
 def lire(table, cle, max_jours=None):
     """Renvoie la valeur en cache, ou None si absente ou trop vieille."""
     max_jours = CONFIG.get("cache_jours", 30) if max_jours is None else max_jours
-    colonne = {"entreprises": "siren", "analyses": "siren", "urls": "url", "api": "cle"}[table]
+    colonne = {"entreprises": "siren", "analyses": "siren", "qualifications": "siren", "urls": "url", "api": "cle"}[table]
     ligne = connexion().execute(
         f"SELECT donnees, maj FROM {table} WHERE {colonne} = ?", (cle,)).fetchone()
     if not ligne or time.time() - ligne[1] > max_jours * 86400:
@@ -61,9 +63,9 @@ def compteur(api):
     return ligne[0] if ligne else 0
 
 
-def incrementer(api):
+def incrementer(api, n=1):
     mois = date.today().strftime("%Y-%m")
     connexion().execute("""
-        INSERT INTO compteurs VALUES (?, ?, 1)
-        ON CONFLICT (api, mois) DO UPDATE SET nb = nb + 1""", (api, mois))
+        INSERT INTO compteurs VALUES (?, ?, ?)
+        ON CONFLICT (api, mois) DO UPDATE SET nb = nb + excluded.nb""", (api, mois, n))
     connexion().commit()
