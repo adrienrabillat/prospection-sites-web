@@ -1,181 +1,135 @@
-"""Outil de prospection : entreprises sans site, avec seulement une page Facebook, ou avec un site cassé / daté.
+"""Trouve, dans une ville, les entreprises indépendantes dont le site est fait maison, amateur ou très daté.
 
-Exemples :
-    python prospect.py --activite auto-ecole --ville Clichy --ville Levallois-Perret --limite 200
-    python prospect.py --naf 43.22A --departement 92 --limite 100
-    python prospect.py --opposition 123456789 --motif "demande par téléphone le 12/11"
+    .venv/bin/python prospect.py "Clichy"
+    .venv/bin/python prospect.py "Levallois-Perret" --budget 8
+    .venv/bin/python prospect.py "Clichy" --limite 20        # essai rapide sur 20 sites
 
-Interface graphique : streamlit run app.py
+Tout est mémorisé dans prospection.sqlite : relancer la même commande reprend où l'on s'était arrêté,
+sans revisiter ni repayer ce qui est déjà fait. Interface graphique : streamlit run app.py
 """
 
 import argparse
-from datetime import date
+import sys
 
-from prospection import agent_ia, cache, entreprises, oppositions, sites, suivi
-from prospection.analyse import analyser
-from prospection.config import CONFIG, DOSSIER_DATA, cle
-from prospection.export import exporter
-from prospection.outils import slug
-from prospection.score import calculer
+from prospection import base, collecte, jugement, potentiel, rapport, visite
+from prospection.config import CONFIG, verifier_cle_anthropic
 
 
 def lire_arguments():
-    p = argparse.ArgumentParser(description="Trouve des entreprises sans site ou avec un site daté.")
-    p.add_argument("--activite", action="append", default=[], help="nom lisible défini dans activites.yaml (répétable)")
-    p.add_argument("--naf", action="append", default=[], help="code NAF, ex. 85.53Z (répétable)")
-    p.add_argument("--ville", action="append", default=[], help="nom de commune (répétable)")
-    p.add_argument("--cp", action="append", default=[], help="code postal (répétable)")
-    p.add_argument("--departement", action="append", default=[], help="code département, ex. 92 (répétable)")
-    p.add_argument("--mots-cles", help="recherche libre dans le nom / l'adresse")
-    p.add_argument("--limite", type=int, default=50, help="nombre maximum d'entreprises gardées (défaut : 50)")
-    p.add_argument("--max-etablissements", type=int, help="exclut les entreprises ayant plus d'établissements")
-    p.add_argument("--sans-serpapi", action="store_true", help="ne pas consommer de crédits SerpAPI")
-    p.add_argument("--sans-brave", action="store_true", help="ne pas utiliser Brave Search")
-    p.add_argument("--sans-pagespeed", action="store_true", help="ne pas appeler PageSpeed Insights")
-    p.add_argument("--sans-ia", action="store_true", help="ne pas qualifier les prospects avec l'agent IA (payant)")
-    p.add_argument("--ia-score-min", type=int, help="score des règles minimum pour passer à l'IA "
-                                                    f"(défaut : {CONFIG['ia']['score_min']}, 0 = tous)")
-    p.add_argument("--rafraichir", action="store_true", help="réanalyse les entreprises déjà en cache")
-    p.add_argument("--opposition", metavar="SIREN", help="ajoute une entreprise à la liste d'opposition et quitte")
-    p.add_argument("--motif", default="", help="motif de l'opposition (avec --opposition)")
+    p = argparse.ArgumentParser(description="Entreprises d'une ville dont le site est à refaire.")
+    p.add_argument("ville", help="nom de la ville (ou code postal)")
+    p.add_argument("--budget", type=float, default=CONFIG["budget"]["par_ville_usd"],
+                   help=f"dépense Anthropic maximale pour ce lancement, en dollars (défaut : {CONFIG['budget']['par_ville_usd']})")
+    p.add_argument("--limite", type=int, help="ne traiter que les N premiers sites (pour un essai)")
+    p.add_argument("--sans-google", action="store_true", help="ne pas utiliser le quota Google Maps (SerpAPI)")
+    p.add_argument("--visites-seulement", action="store_true",
+                   help="trouver et visiter les sites sans les faire juger (gratuit, sans clé Anthropic)")
+    p.add_argument("--refaire", action="store_true", help="revisiter et rejuger les sites déjà traités")
     return p.parse_args()
 
 
-def nom_fichier(args):
-    activite = "-".join(args.activite) or "-".join(args.naf) or "tout"
-    lieu = "-".join(args.ville) or "-".join(args.cp) or "-".join(args.departement) or "france"
-    return DOSSIER_DATA / f"prospects_{slug(activite)[:40]}_{slug(lieu)[:60]}_{date.today().isoformat()}.xlsx"
+def executer(ville, budget, limite=None, sans_google=False, refaire=False, visites_seulement=False, journal=print):
+    """Lance toute la chaîne pour une ville. Renvoie (groupes de prospects, chemin Excel, chemin de la page)."""
+    probleme = None if visites_seulement else verifier_cle_anthropic(jugement.MODELE)
+    if probleme:
+        raise SystemExit(f"Clé Anthropic : {probleme}.\nPour avancer sans elle : ajoute --visites-seulement "
+                         "(trouve et visite les sites, gratuit), puis relance quand la clé est prête.")
+    if visites_seulement:
+        budget = 0.0
+    reste_total = CONFIG["budget"]["total_usd"] - base.depense_totale()
+    budget = min(budget, max(0.0, reste_total))
+    journal(f"💶 Budget de ce lancement : {budget:.2f} $ (déjà dépensé en tout : {base.depense_totale():.2f} $ "
+            f"sur {CONFIG['budget']['total_usd']} $)")
 
+    com = collecte.commune(ville)
+    nom = com["nom"]
+    habitants = f"{com['population']:,}".replace(",", " ")
+    journal(f"\n① Entreprises de {nom} ({com['departement']}, {habitants} habitants) qui ont un site")
+    candidats, sans_site, depense = collecte.collecter(com, budget_ia=budget * 0.25, avec_google=not sans_google, journal=journal)
+    candidats.sort(key=lambda c: c["cle"])
+    if limite:
+        candidats = candidats[:limite]
+    journal(f"  ✅ {len(candidats)} sites d'entreprises à examiner")
 
-def analyser_entreprise(fiche, args):
-    """Étapes 2 et 3 pour une entreprise, avec cache par SIREN (reprise après interruption)."""
-    deja = None if args.rafraichir else cache.lire("analyses", fiche["siren"])
-    if deja:
-        return deja, True
-    site = sites.trouver_site(fiche, avec_serpapi=not args.sans_serpapi, avec_brave=not args.sans_brave)
-    # Le nom légal cache parfois une franchise (« ASK AUTO ECOLE » est un CER) : on regarde aussi les titres
-    titres = [site["google"].get("titre_google") or "", sites.titre_page(site["accueil"])]
-    site["franchise"] = entreprises.mot_franchise(" ".join(titres)) or ""
-    analyse = None
-    if site["statut"] == "Site actif" and site["accueil"] and site["accueil"]["ok"]:
-        analyse = analyser(site["accueil"], site["html_mentions"], avec_pagespeed=not args.sans_pagespeed)
-    site = {k: v for k, v in site.items() if k not in ("accueil", "html_mentions")}
-    resultat = {"site": site, "analyse": analyse, "date_analyse": date.today().isoformat()}
-    cache.ecrire("analyses", fiche["siren"], resultat)
-    return resultat, False
+    # À voir : jamais visités, ou visités avant l'ajout de l'audit (performance, SEO, GEO)
+    a_visiter = [c for c in candidats if refaire or not c.get("visite")
+                 or (c["visite"]["etat"] == "ok" and "audit" not in c["visite"])]
+    journal(f"\n② Visite des sites ({len(a_visiter)} à voir, {len(candidats) - len(a_visiter)} déjà vus)")
+    compte = {"n": 0}
 
+    def apres_visite(c):
+        compte["n"] += 1
+        base.enregistrer(c)
+        v = c["visite"]
+        etat = "✓" if v["etat"] == "ok" else f"✗ {v['etat']} : {v['motif']}"
+        journal(f"  [{compte['n']}/{len(a_visiter)}] {c['nom'][:34]:34} {c['domaine'][:36]:36} {etat}")
 
-def construire_prospect(fiche, resultat, liste_opposition):
-    """Assemble fiche + résultat d'analyse + suivi + verdict de l'IA, et calcule le score."""
-    opposition = fiche["siren"] in liste_opposition
-    if opposition and resultat is None:
-        resultat = {"site": {"statut": "Non analysé (opposition)", "url": "", "source": "", "confiance": "",
-                             "preuve": "", "google": {}}, "analyse": None, "date_analyse": ""}
-    prospect = {"fiche": fiche, **resultat, "opposition": opposition, **suivi.lire(fiche["siren"])}
-    prospect["score"] = prospect["score_regles"] = \
-        0 if opposition else calculer(fiche, resultat["site"], resultat["analyse"])
-    return agent_ia.appliquer(prospect, agent_ia.verdict(fiche["siren"]))
+    try:
+        visite.visiter(a_visiter, nom, apres_visite)
+    except KeyboardInterrupt:
+        journal("\n⏸️  Visites interrompues : relance la même commande pour reprendre.")
 
+    a_juger = [] if visites_seulement else [c for c in candidats if (c.get("visite") or {}).get("etat") == "ok"
+               and c["visite"].get("capture_ordinateur") and "audit" in c["visite"]
+               and (refaire or not jugement.a_jour(c))]
+    reste = budget - depense
+    if visites_seulement:
+        journal("\n③ Jugement par Claude : pas cette fois (--visites-seulement). Relance sans cette option pour juger.")
+    else:
+        journal(f"\n③ Jugement par Claude ({jugement.MODELE}) : {len(a_juger)} sites, "
+                f"≈ {len(a_juger) * jugement.cout_moyen():.2f} $ (budget restant : {reste:.2f} $)")
+    compte["n"] = 0
 
-def afficher_sources():
-    serpapi = cle("SERPAPI_KEY")
-    print("🔌 Sources : API Recherche d'entreprises ✓, OpenStreetMap ✓, devinette de domaine ✓"
-          f", Google Maps (SerpAPI) {'✓' if serpapi else '✗ pas de clé'}"
-          f", Brave {'✓' if cle('BRAVE_API_KEY') else '✗ pas de clé'}"
-          f", PageSpeed {'✓' if cle('PAGESPEED_API_KEY') else '✗ pas de clé'}"
-          f", agent IA {'✓' if cle('ANTHROPIC_API_KEY') else '✗ pas de clé'}")
-    if serpapi:
-        print(f"   SerpAPI ce mois-ci : {cache.compteur('serpapi')} / {CONFIG['serpapi']['plafond_mensuel']} appels")
-    if cle("ANTHROPIC_API_KEY"):
-        print(f"   IA ce mois-ci : {agent_ia.depense_du_mois():.2f} $ / {CONFIG['ia']['budget_mensuel_usd']} $")
-
-
-def qualifier_par_ia(prospects, args, progression=None):
-    """Étape 3 : l'agent IA vérifie sur le web les prospects retenus par les règles."""
-    if args.sans_ia or not cle("ANTHROPIC_API_KEY"):
-        return
-    a_faire = [p for p in prospects if agent_ia.a_qualifier(p, args.ia_score_min)]
-    deja = sum(1 for p in prospects if p.get("ia"))
-    print(f"\n③ Qualification par l'IA ({agent_ia.MODELE}) : {len(a_faire)} entreprise(s) à vérifier, "
-          f"≈ {len(a_faire) * agent_ia.cout_moyen():.2f} $" + (f", {deja} déjà qualifiée(s)" if deja else ""))
-
-    def afficher(i, total, p, erreur):
-        nom = (p["fiche"]["enseigne"] or p["fiche"]["nom"])[:38]
+    def apres_jugement(c, erreur):
+        compte["n"] += 1
         if erreur:
-            print(f"  [{i}/{total}] {nom:38} ⚠️  {erreur}")
-        else:
-            v = p["ia"]
-            print(f"  [{i}/{total}] {nom:38} {v['score']:3}  {'✅' if v['qualifie'] else '❌'} "
-                  f"{v['presence_web']} — {v['raison'][:90]}")
-        if progression:
-            progression(i, total, p, erreur)
+            journal(f"  [{compte['n']}/{len(a_juger)}] {c['nom'][:34]:34} ⚠️  {erreur}")
+            return
+        base.enregistrer(c)
+        v = c["verdict"]
+        a = c["visite"]["audit"]
+        notes = " ".join(f"{nom} {'--' if n is None else n:>3}" for nom, n in (
+            ("design", v["note_design"]), ("perf", a["performance"]["note"]), ("seo", a["seo"]["note"]),
+            ("geo", a["geo"]["note"])))
+        journal(f"  [{compte['n']}/{len(a_juger)}] {c['nom'][:30]:30} {v['score']:3}  [{notes}]  {v['niveau_site']}"
+                + ("" if v["proprietaire"] == rapport.INDEPENDANTE else f" — écarté : {v['proprietaire']}"))
 
     try:
-        agent_ia.qualifier_lot(a_faire, afficher)
+        juges, cout, non_juges = jugement.juger_lot(a_juger, nom, reste, apres_jugement)
+        depense += cout
+        if non_juges:
+            journal(f"  ⚠️  Budget atteint : {non_juges} site(s) non jugé(s). Relance avec un budget pour les finir.")
     except KeyboardInterrupt:
-        print("\n⏸️  Qualification interrompue : les verdicts déjà obtenus sont gardés.")
-    print(f"  💶 Dépense IA ce mois-ci : {agent_ia.depense_du_mois():.2f} $ / {CONFIG['ia']['budget_mensuel_usd']} $")
+        journal("\n⏸️  Jugements interrompus : les verdicts obtenus sont gardés.")
 
+    if not visites_seulement:
+        # Potentiel : tout sauf les sites que le verdict a déjà écartés (chaînes, plateformes…)
+        a_noter = [c for c in candidats + sans_site if "potentiel" not in c
+                   and (c.get("verdict") or {}).get("proprietaire", rapport.INDEPENDANTE) == rapport.INDEPENDANTE]
+        journal(f"\n④ Potentiel commercial (métier, avis Google, registre des entreprises) : {len(a_noter)} entreprises")
+        depense += potentiel.qualifier(a_noter, com, CONFIG["budget"]["total_usd"] - base.depense_totale(), journal)
 
-def executer(args, progression=None, progression_ia=None):
-    """Lance une recherche complète et renvoie (prospects, chemin de l'Excel).
-
-    `progression(i, total, prospect)` est appelée après chaque entreprise analysée, et
-    `progression_ia(i, total, prospect, erreur)` après chaque qualification par l'IA (utilisées par l'interface).
-    """
-    if args.max_etablissements is not None:
-        CONFIG["exclusions"]["max_etablissements"] = args.max_etablissements
-
-    print("\n① Recherche des entreprises")
-    naf = entreprises.codes_naf(args.activite, args.naf)
-    communes = entreprises.codes_communes(args.ville)
-    fiches, nb_exclues = entreprises.rechercher(naf, communes, args.cp, args.departement, args.mots_cles, args.limite)
-    print(f"  ✅ {len(fiches)} entreprises gardées, {nb_exclues} exclues")
-
-    liste_opposition = oppositions.lire()
-    a_analyser = [f for f in fiches if f["siren"] not in liste_opposition]
-    if len(a_analyser) < len(fiches):
-        print(f"  🚫 {len(fiches) - len(a_analyser)} entreprise(s) en opposition : non analysées")
-
-    print("\n② Recherche et analyse des sites")
-    nouvelles = [f for f in a_analyser if args.rafraichir or cache.lire("analyses", f["siren"]) is None]
-    sites.prechercher_openstreetmap(nouvelles)
-
-    prospects = []
-    try:
-        for i, fiche in enumerate(fiches, start=1):
-            resultat, en_cache = (None, False) if fiche["siren"] in liste_opposition \
-                else analyser_entreprise(fiche, args)
-            prospect = construire_prospect(fiche, resultat, liste_opposition)
-            prospects.append(prospect)
-            site = prospect["site"]
-            print(f"  [{i}/{len(fiches)}] {(fiche['enseigne'] or fiche['nom'])[:38]:38} "
-                  f"{prospect['score']:3}  {site['statut']}{' — ' + site['url'] if site['url'] else ''}"
-                  f"{'  (cache)' if en_cache else ''}")
-            if progression:
-                progression(i, len(fiches), prospect)
-    except KeyboardInterrupt:
-        print("\n⏸️  Interrompu : export des résultats déjà obtenus. Relance la même commande pour reprendre.")
-
-    if not prospects:
-        print("Aucune entreprise à exporter.")
-        return prospects, None
-    qualifier_par_ia(prospects, args, progression_ia)
-    criteres = " ".join(f'--{k.replace("_", "-")} "{x}"' for k, v in vars(args).items()
-                        if v and k in ("activite", "naf", "ville", "cp", "departement", "mots_cles", "limite")
-                        for x in (v if isinstance(v, list) else [v]))
-    chemin = exporter(prospects, nom_fichier(args), criteres)
-    print(f"\n④ 📊 Fichier Excel : {chemin}")
-    return prospects, chemin
+    connus = {x["cle"] for x in candidats + sans_site}
+    groupes, chemin_excel, chemin_page = rapport.produire([c for c in base.candidats(nom) if c["cle"] in connus], nom)
+    p = groupes["prospects"]
+    journal(f"\n⑤ Résultat pour {nom} (entreprises à bon potentiel seulement)")
+    journal(f"  🎯 Site à refaire : {sum(1 for c in p if c['verdict']['score'] >= 80)} excellents prospects (80+), "
+            f"{sum(1 for c in p if 60 <= c['verdict']['score'] < 80)} bons (60 à 79), sur {len(p)} retenus")
+    journal(f"  🚫 Sans site : {len(groupes['sans_site'])} retenues · 📉 potentiel faible : {len(groupes['faible'])}")
+    journal(f"  🔧 {len(groupes['casses'])} sites cassés · {len(groupes['ecartes'])} écartés (chaînes, "
+            f"plateformes…) · {len(groupes['a_voir'])} à voir à la main")
+    for c in p[:10]:
+        journal(f"     {c['verdict']['score']:3}  {c['nom'][:34]:34} {c['domaine']}")
+    journal(f"  💶 Dépense de ce lancement : {depense:.2f} $ (total : {base.depense_totale():.2f} $)")
+    journal(f"  📊 Excel : {chemin_excel}")
+    journal(f"  🌐 Page avec les captures : {chemin_page}")
+    return groupes, chemin_excel, chemin_page
 
 
 def main():
     args = lire_arguments()
-    if args.opposition:
-        oppositions.ajouter(args.opposition, args.motif)
-        return
-    afficher_sources()
-    executer(args)
+    sys.stdout.reconfigure(line_buffering=True)
+    executer(args.ville, args.budget, args.limite, args.sans_google, args.refaire, args.visites_seulement)
 
 
 if __name__ == "__main__":

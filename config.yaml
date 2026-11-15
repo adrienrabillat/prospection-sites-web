@@ -1,109 +1,131 @@
-# Réglages généraux de l'outil de prospection.
+# Réglages de l'outil de prospection. Usage : .venv/bin/python prospect.py "Clichy"
 
-# Durée de validité du cache local (jours). Au-delà, l'entreprise est réanalysée.
-cache_jours: 30
+# Dépense Anthropic (en dollars). L'outil s'arrête avant de dépasser ces plafonds.
+budget:
+  par_ville_usd: 20        # plafond d'un lancement (modifiable avec --budget)
+  total_usd: 100           # plafond cumulé, tous lancements confondus (ton crédit)
 
-# Exclusions à l'étape 1
-exclusions:
-  # Mots (entiers) qui signalent une franchise ou un réseau, cherchés dans le nom et l'enseigne.
-  franchises: [ecf, cer, stych, ornikar, "en voiture simone", "point s", speedy, midas, norauto,
-               feu vert, "carglass", "franck provost", "jean louis david", "dessange", "saint algue",
-               "camille albane", "mcdonald", "burger king", "kfc", "subway", "domino", "pizza hut",
-               "brioche doree", "la mie caline", "orpi", "century 21", "laforet", "guy hoquet",
-               "stephane plaza", "era immobilier", "foncia", "nexity", "defim", "5 oceans",
-               "paris nautique", "french boat", "eurest", "sodexo", "elior", "compass"]
-  # Au-delà de ce nombre d'établissements ouverts, l'entreprise est considérée comme un réseau.
-  max_etablissements: 5
-
-# Débit des APIs : délai minimum entre deux requêtes vers le même hôte (secondes)
-debit:
-  recherche-entreprises.api.gouv.fr: 0.2   # limite officielle : 7 req/s par IP
-  geo.api.gouv.fr: 0.1
-  serpapi.com: 1.5                          # plan gratuit : 50 requêtes / heure
-  overpass-api.de: 5.0                      # instance publique OpenStreetMap : usage raisonnable
-  api.search.brave.com: 1.1                 # 1 req/s
-  www.googleapis.com: 1.0
-  defaut: 1.0                               # sites des entreprises : on reste poli
-
-# Domaines ignorés dans les résultats de moteur de recherche (annuaires, réseaux sociaux, plateformes)
-annuaires: [pagesjaunes.fr, societe.com, pappers.fr, infogreffe.fr, facebook.com, instagram.com,
-            linkedin.com, doctolib.fr, tripadvisor.fr, tripadvisor.com, verif.com, manageo.fr,
-            annuaire-entreprises.data.gouv.fr, data.gouv.fr, google.com, google.fr, yelp.fr, yelp.com,
-            mappy.com, justacote.com, 118712.fr, 118000.fr, kompass.com, infonet.fr, corporama.com,
-            societeinfo.com, lefigaro.fr, l-entreprise.com, vroomvroom.fr, ornikar.com, stych.fr,
-            planity.com, treatwell.fr, thefork.fr, ubereats.com, deliveroo.fr, youtube.com, x.com,
-            twitter.com, tiktok.com, wikipedia.org, waze.com, apple.com, starofservice.com,
-            habitatpresto.com, travaux.com, lesbonsartisans.fr, hoodspot.fr, cylex-france.fr,
-            annuaire.laposte.fr, bottin.fr, sirene.fr, insee.fr, entreprises.lefigaro.fr, procedurecollective.fr]
-
-# Délais réseau (secondes)
-timeout_api: 20
-timeout_site: 12
-
-# SerpAPI : plafond mensuel d'appels réels (le plan gratuit en donne 250)
-serpapi:
-  plafond_mensuel: 200
-
-# Brave Search : plafond mensuel (5 $ offerts ≈ 1 000 requêtes)
-brave:
-  plafond_mensuel: 900
-
-# Agent IA de qualification (clé ANTHROPIC_API_KEY) : vérifie chaque prospect sur le web et rend un verdict
+# Jugement des sites : Claude regarde les captures d'écran (ordinateur + mobile) et le texte de chaque site
 ia:
+  modele: claude-opus-5-5
+  effort: medium                   # low | medium | high : profondeur de réflexion (et coût)
+  parallele: 4                     # sites jugés en même temps
+  cout_estime_usd: 0.06            # par site, avant la première mesure (ensuite : moyenne réelle)
+  validite_jours: 180              # un verdict est refait au-delà
+  # Tarifs en dollars par million de tokens (novembre 2026), pour compter la dépense
+  prix_par_million:
+    claude-opus-5-5: {entree: 4.0, sortie: 20.0}
+    claude-sonnet-5-5: {entree: 2.0, sortie: 10.0}
+    claude-haiku-5-5: {entree: 0.1, sortie: 0.5}
+
+# Google Maps via SerpAPI : une recherche par métier renvoie 20 entreprises avec leur site, téléphone et avis
+google_maps:
+  plafond_mensuel: 240             # le plan gratuit donne 250 recherches par mois
+  pages_par_metier: 1              # 2 = 40 entreprises par métier (double les recherches)
+
+# Secours quand Google Maps n'est pas disponible (pas de clé ou quota épuisé) : Claude cherche sur le web
+decouverte_ia:
   modele: claude-sonnet-5-5
-  effort: medium                 # low | medium | high : profondeur de réflexion (et coût)
-  score_min: 40                  # seuls les prospects dont le score des règles atteint ce seuil sont envoyés à l'IA
-  parallele: 4                   # entreprises qualifiées en même temps
-  max_recherches: 5              # recherches web par entreprise (10 $ / 1 000 recherches)
-  max_pages: 4                   # pages ouvertes par entreprise
-  budget_mensuel_usd: 20         # plafond de dépense IA par mois, compté dans le cache
-  cout_estime_usd: 0.10          # estimation par entreprise avant la première qualification (ensuite : moyenne réelle)
-  validite_jours: 180            # un verdict est refait au-delà
-  # Tarifs de claude-sonnet-5-5 (octobre 2026), pour estimer la dépense
-  prix_par_million: {entree: 2.0, sortie: 10.0, cache_ecriture: 2.5, cache_lecture: 0.2}
+  max_recherches: 4                # recherches web par métier (10 $ les 1 000)
   prix_recherche: 0.01
+  cout_estime_usd: 0.15            # par métier
 
-# Devinette de domaine
-devinette:
-  extensions: [fr, com]
-  max_domaines: 24
+# Potentiel commercial : seules les entreprises au-dessus de ces deux seuils apparaissent dans le rapport
+potentiel:
+  interet_min: 4                   # intérêt d'un site pour ce métier, de 0 à 5
+  sante_min: 3                     # santé de l'entreprise (avis Google, registre : ancienneté, effectif, comptes), de 0 à 5
+  modele: claude-sonnet-5-5
+  taille_lot: 20                   # entreprises notées par appel
+  cout_estime_lot_usd: 0.04
 
-# Seuils de « site daté »
-date:
-  copyright_ancien_annees: 3      # copyright plus vieux que (année courante - 3)
-  jquery_ancien_avant: "3.0"
-  temps_reponse_lent: 3.0         # secondes
-  pagespeed_mauvais: 50           # score mobile < 50
+# Métiers cherchés dans la ville (une recherche Google Maps chacun). Ajoute ou retire librement.
+metiers:
+  - plombier
+  - chauffagiste
+  - électricien
+  - serrurier
+  - menuisier
+  - peintre en bâtiment
+  - maçon
+  - couvreur
+  - carreleur
+  - entreprise de rénovation
+  - paysagiste
+  - entreprise de nettoyage
+  - déménageur
+  - garage automobile
+  - carrosserie
+  - auto-école
+  - taxi VTC
+  - coiffeur
+  - barbier
+  - institut de beauté
+  - salon de massage
+  - tatoueur
+  - restaurant
+  - pizzeria
+  - traiteur
+  - boulangerie pâtisserie
+  - fleuriste
+  - pressing retoucherie
+  - cordonnerie
+  - photographe
+  - ostéopathe
+  - kinésithérapeute
+  - psychologue
+  - vétérinaire
+  - salle de sport
+  - coach sportif
+  - école de danse
+  - cours de musique
+  - soutien scolaire
+  - agence immobilière
+  - expert-comptable
+  - avocat
+  - architecte
+  - opticien
+  - réparation téléphone informatique
+  - hôtel
 
-# Score du prospect (sur 100)
-score:
-  statut:
-    Aucun site: 85
-    Facebook / Instagram seulement: 85
-    Site cassé: 80
-    Domaine expiré / DNS absent: 80
-    Site actif: 25
-  # Points ajoutés à un site actif pour chaque signal de site daté
-  signaux:
-    pas_https: 15
-    pas_mobile: 20
-    copyright_ancien: 10
-    jquery_ancien: 5
-    flash: 15
-    tableaux: 10
-    pas_de_title: 5
-    pas_de_meta_description: 5
-    lent: 5
-    pagespeed_mauvais: 10
-  # Points ajoutés selon la gamme du CMS (voir empreintes.yaml)
-  gamme:
-    bas: -10
-    standard: 0
-    moderne: -20
-  bonus:
-    note_google_min: 4.3
-    nb_avis_min: 30
-    bonne_reputation: 10
-    creation_recente_annees: 3
-    creation_recente: 5
-    pas_de_rdv_en_ligne: 3
+# Ce qui n'est jamais visité
+exclusions:
+  # Réseaux sociaux, annuaires, plateformes, administrations : pas le site de l'entreprise
+  domaines: [facebook.com, fb.com, fb.me, instagram.com, linktr.ee, taplink.cc, beacons.ai, bento.me, linkedin.com, tiktok.com, youtube.com, x.com,
+             twitter.com, google.com, google.fr, goo.gl, business.site, pagesjaunes.fr, societe.com, pappers.fr,
+             annuaire-entreprises.data.gouv.fr, doctolib.fr, planity.com, treatwell.fr, booksy.com, thefork.fr,
+             lafourchette.com, tripadvisor.fr, tripadvisor.com, ubereats.com, deliveroo.fr, just-eat.fr,
+             booking.com, airbnb.fr, yelp.fr, mappy.com, lesbonsartisans.fr, starofservice.com, habitatpresto.com,
+             travaux.com, wikipedia.org, laposte.fr, transilien.com, ratp.fr, sncf.com, service-public.fr,
+             ameli.fr, pole-emploi.fr, francetravail.fr, malt.fr, superprof.fr, resalib.fr, medoucine.com]
+  # Chaînes et franchises reconnues à leur nom (en mots entiers), pour ne pas payer leur jugement
+  enseignes: [afflelou, krys, "optical center", atol, "optic 2000", "grand optical", adagio, ibis, novotel, mercure,
+              campanile, kyriad, "b&b hotels", "premiere classe", "appart city", "ecf", "cer", stych, ornikar,
+              "point s", speedy, midas, norauto, "feu vert", carglass, "franck provost", "jean louis david",
+              dessange, "saint algue", "camille albane", "tchip", "yves rocher", "body minute", sephora, "mcdonald",
+              "burger king", kfc, subway, "domino's", "pizza hut", "o'tacos", "brioche doree",
+              "la mie caline", "marie blachere", orpi, "century 21", laforet, "guy hoquet", "stephane plaza",
+              "era immobilier", foncia, nexity, "basic fit", "fitness park", "keep cool", "l'orange bleue",
+              acadomia, "complétude", "anacours", "monceau fleurs", interflora, "5 a sec", "demeco", "les gentlemen du demenagement"]
+  # Fins de domaine exclues (administrations, enseignement public)
+  suffixes: [.gouv.fr, .ac-versailles.fr, .ac-paris.fr, .ac-creteil.fr]
+  # Lieux OpenStreetMap qui ne sont pas des clients possibles (valeurs de amenity, office, shop…)
+  types_osm: [school, college, university, kindergarten, townhall, post_office, police, fire_station, library,
+              place_of_worship, hospital, bank, atm, fuel, parking, bicycle_rental, charging_station,
+              community_centre, social_facility, courthouse, public_building, government, bus_station,
+              supermarket, convenience, car_rental, marketplace, recycling, post_box]
+  # Un même domaine présent sur plus de lieux que ce nombre dans la ville = réseau, pas un indépendant
+  max_lieux_par_domaine: 2
+
+# Délai minimum entre deux requêtes vers le même service (secondes)
+debit:
+  geo.api.gouv.fr: 0.1
+  recherche-entreprises.api.gouv.fr: 0.2
+  serpapi.com: 1.0
+  overpass-api.de: 5.0
+  defaut: 1.0
+timeout_api: 40
+
+# Visite des sites (navigateur Chromium sans fenêtre)
+visite:
+  parallele: 4                     # sites ouverts en même temps
+  delai_chargement_s: 30

@@ -4,6 +4,7 @@ data/
 *.xlsx
 .venv/
 cache.sqlite
+prospection.sqlite
 __pycache__/
 *.pyc
 ScrapperGbusiness.ipynb

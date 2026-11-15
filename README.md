@@ -1,157 +1,127 @@
-# Outil de prospection : entreprises sans site ou avec un site daté
+# Prospection : les entreprises d'une ville dont le site est à refaire
 
-Trouve les entreprises d'une activité et d'une zone qui n'ont **pas de site**, **seulement une page Facebook / Instagram**, ou un site **cassé, expiré ou daté**, fait vérifier chaque prospect sur le web par un **agent IA** (Claude Sonnet), puis les classe par score dans un fichier Excel.
+Tu donnes une ville. L'outil trouve les entreprises indépendantes qui ont **déjà un site, mais un site raté** : fait par le patron lui-même, amateur ou très daté. Ce sont celles qui ont déjà voulu un site et à qui il manque quelqu'un pour le faire correctement. Chaque site est visité dans un vrai navigateur, puis **Claude regarde les captures d'écran** (ordinateur et mobile) et rend un verdict : score, défauts visibles, accroche pour le premier contact.
 
-![Interface (noms d'entreprises et de dirigeants floutés)](docs/apercu.jpg)
+```bash
+.venv/bin/python prospect.py "Clichy"
+```
 
-> **Projet en cours.** Fonctionnel de bout en bout (ligne de commande et interface Streamlit), encore à affiner. L'agent IA qualifie les prospects et propose un angle d'approche ; piste suivante : rédiger le premier message.
->
-> Les fichiers de prospects (`data/`), le cache, le suivi et les clés (`.env`) restent en local et ne sont pas versionnés.
+Il relève aussi les entreprises **sans site** (fiche Google Maps sans site, ou avec seulement une page Facebook, Instagram, Doctolib…). Dans les deux cas, seules sont gardées celles **dont le métier tire vraiment parti d'un site et qui montrent des signes de bonne santé**.
+
+Résultat dans `data/clichy/` : `rapport.html` (les prospects avec leurs captures, à ouvrir dans le navigateur) et `prospects.xlsx`.
+
+> Les prospects (`data/`), la base (`prospection.sqlite`) et les clés (`.env`) restent en local et ne sont pas versionnés.
 
 ## Installation
 
 ```bash
-cd prospect
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
-cp .env.example .env      # puis remplir les clés voulues (toutes optionnelles)
+.venv/bin/playwright install chromium     # le navigateur qui visite les sites
+cp .env.example .env                      # puis remplir ANTHROPIC_API_KEY (et SERPAPI_KEY)
 ```
 
-Sans aucune clé, l'outil fonctionne déjà avec les sources gratuites : API de l'État, OpenStreetMap et devinette de domaine. La clé **Anthropic** active l'agent IA (payant à l'usage, plafonné par mois).
-
-## Interface (recommandé)
-
-Double-clique sur **`lancer.command`** dans le Finder, ou tape :
+## Utilisation
 
 ```bash
-.venv/bin/streamlit run app.py
+.venv/bin/python prospect.py "Clichy"                 # une ville, budget par défaut (20 $)
+.venv/bin/python prospect.py "Levallois-Perret" --budget 8
+.venv/bin/python prospect.py "Clichy" --limite 20     # essai rapide sur 20 sites
 ```
 
-L'interface s'ouvre sur http://localhost:8501 (accessible uniquement depuis ton ordinateur) avec trois onglets :
+| Option | Rôle |
+|---|---|
+| `--budget N` | Dépense Anthropic maximale pour ce lancement, en dollars |
+| `--limite N` | Ne traite que N sites (pour essayer) |
+| `--sans-google` | N'utilise pas le quota Google Maps |
+| `--visites-seulement` | Trouve et visite les sites sans les faire juger (gratuit, sans clé Anthropic) |
+| `--refaire` | Revisite et rejuge les sites déjà traités |
 
-- **📋 Prospects** : toutes les entreprises déjà analysées, toutes recherches confondues. Tu peux filtrer par ville, activité, statut web, suivi, score minimum, texte libre, ou n'afficher que les **qualifiés par l'IA**. Le bloc « Qualifier avec l'IA » envoie à l'agent les entreprises de la vue filtrée pas encore vérifiées, avec le coût estimé avant de lancer. Les colonnes **Suivi** (Nouveau, À contacter, Contacté, À relancer, Rendez-vous, Client, Pas intéressé, 🚫 Opposition) et **Notes** se modifient directement dans le tableau, puis bouton « Enregistrer le suivi ». Choisir « 🚫 Opposition » inscrit aussi l'entreprise dans `oppositions.csv`. Le bouton « Exporter la sélection » produit un Excel de la vue filtrée.
-- **🔎 Nouvelle recherche** : activité(s) ou code NAF, ville(s) ou département, nombre maximum (jusqu'à 10 000), cases Google Maps et qualification IA. Les résultats s'affichent au fur et à mesure.
-- **⚙️ Réglages** : colle ta **clé Anthropic** (testée avant d'être enregistrée ; dépense du mois et coût moyen par entreprise affichés), puis ta **clé SerpAPI**. Elle est testée auprès de SerpAPI (sans consommer de recherche) avant d'être enregistrée dans `.env`, puis le plan et les recherches restantes s'affichent. Les autres clés (PageSpeed, Brave, e-mail de contact) sont dans « Autres clés ».
+Compte 30 à 45 minutes et 15 à 20 $ pour une ville de 60 000 habitants (environ 370 sites). Tu peux interrompre (Ctrl+C) : **relancer la même commande reprend où l'on s'était arrêté**, sans revisiter ni repayer ce qui est fait. Si le budget s'arrête avant la fin, les sites qui ont le plus l'air faits maison sont jugés en premier.
 
-Le suivi et les notes sont stockés dans `suivi.sqlite`, séparé du cache : ne le supprime pas.
+**Interface** : double-clique sur `lancer.command`, ou `.venv/bin/streamlit run app.py`. Trois onglets : les prospects de toutes les villes (filtres, captures, suivi commercial et notes), le lancement d'une nouvelle ville, les réglages (clés, dépense).
 
-## Exemples en ligne de commande
+## Comment ça marche
 
-```bash
-# Auto-écoles de deux villes, 200 entreprises maximum
-.venv/bin/python prospect.py --activite auto-ecole --ville Clichy --ville Levallois-Perret --limite 200
+**1. Trouver les entreprises qui ont un site.** On part des sites réels, pas du registre des entreprises : chaque source donne directement le lien « entreprise → son site ».
+- **OpenStreetMap** (gratuit) : tous les lieux de la commune qui ont un site.
+- **Google Maps** via SerpAPI : une recherche par métier (liste `metiers` de `config.yaml`, 46 par défaut), 20 entreprises chacune, avec site, téléphone, note et nombre d'avis. Seules les entreprises dont l'adresse est dans la ville sont gardées. Le plan gratuit donne 250 recherches par mois, soit **5 villes par mois**.
+- **Secours** si Google Maps n'est pas disponible (pas de clé, quota épuisé) : Claude cherche les entreprises de chaque métier sur le web. C'est nettement moins productif (2 ou 3 sites par métier pour environ 0,15 $) : mieux vaut attendre le quota du mois suivant ou prendre un plan SerpAPI.
 
-# Plombiers et chauffagistes de tout le 92
-.venv/bin/python prospect.py --activite plombier --activite chauffagiste --departement 92 --limite 300
+Sont écartés sans rien dépenser : réseaux sociaux, annuaires et plateformes, administrations, chaînes et franchises (marque connue d'OpenStreetMap, liste `enseignes`, domaine présent sur plus de deux lieux).
 
-# Par code NAF et code postal, avec des mots-clés
-.venv/bin/python prospect.py --naf 56.10A --cp 75017 --mots-cles pizza
+**2. Visiter chaque site** dans Chromium, comme un visiteur : capture de l'accueil sur ordinateur et sur mobile (bandeau de cookies fermé), texte affiché, indices techniques (constructeur de site, sous-domaine gratuit, adaptation mobile, année du copyright, e-mail en gmail…), coordonnées relevées sur l'accueil, les mentions légales et la page contact. Le chargement sur mobile est chronométré. Au plus quatre pages par site, plus `robots.txt`, `sitemap.xml` et `llms.txt`. Un site qui ne répond pas est réessayé avant d'être classé « cassé » ; si le lien de la fiche Google pointe sur une page disparue, l'accueil du site est visité à la place.
 
-# Sans consommer de crédits payants ou limités
-.venv/bin/python prospect.py --activite coiffeur --ville Suresnes --sans-serpapi --sans-brave --sans-pagespeed
+**3. Noter selon le référentiel** (détail ci-dessous), puis juger. Claude (`claude-opus-5-5`) reçoit les deux captures, le texte, les indices et l'audit mesuré, et rend :
+- à qui appartient le site (entreprise locale indépendante, chaîne, administration, plateforme…) ;
+- le niveau du site (fait maison ou amateur, daté, correct mais perfectible, professionnel et récent, vide ou en construction) et la probabilité qu'il soit fait maison, avec les indices ;
+- les six notes de design ;
+- 3 à 6 **défauts concrets** (apparence, vitesse, SEO, GEO), chiffres à l'appui ;
+- un **score de 0 à 100** (80+ : la refonte se vend d'elle-même ; 60 à 79 : facile à justifier) ;
+- une **accroche** pour le premier contact.
 
-# Tous les prospects passent à l'IA, même ceux que les règles jugent peu intéressants
-.venv/bin/python prospect.py --activite coiffeur --departement 92 --limite 500 --ia-score-min 0
+**4. Noter le potentiel commercial** (`prospection/potentiel.py`), pour toutes les entreprises, avec ou sans site. Deux notes de 0 à 5 données par Claude (`claude-sonnet-5-5`, environ 0,03 $ pour 20 entreprises) :
+- **intérêt d'un site** : selon le métier (les clients cherchent-ils en ligne, que vaut un client ?). Un couvreur ou un restaurant où l'on réserve : 5. Un tabac ou un pressing de quartier : 1 à 3 ;
+- **santé de l'entreprise** : note et nombre d'avis Google, et fiche du **registre des entreprises** de l'État (API gratuite) : année de création, effectif, chiffre d'affaires et résultat quand ils sont publiés. La fiche est sûre quand le SIRET figure sur le site ; sinon elle est cherchée par le nom dans la commune, gardée seulement si les noms se ressemblent nettement, et marquée « à vérifier ». Sans aucune donnée, la santé vaut 2.
 
-# Une entreprise demande à ne plus être contactée (RGPD)
-.venv/bin/python prospect.py --opposition 123456789 --motif "demande par e-mail le 12/11/2026"
-```
+Seuils dans `config.yaml` (`potentiel.interet_min: 4`, `potentiel.sante_min: 3`). Ce qui est en dessous n'apparaît pas dans le rapport et va dans l'onglet « Potentiel faible » de l'Excel.
 
-Options utiles : `--max-etablissements N` (exclut les réseaux), `--rafraichir` (réanalyse ce qui est déjà en cache), `--sans-ia` (pas de qualification IA), `--ia-score-min N`.
-Paris, Lyon et Marseille sont gérées : `--ville Paris` interroge les 20 arrondissements (attention au volume).
+**5. Rapport.** `rapport.html` (sites à refaire avec captures, puis entreprises sans site, filtre par score et par mot) et `prospects.xlsx` avec six onglets : Site à refaire, Sans site, Sites cassés (bon prétexte pour appeler), À voir à la main (sites qui bloquent les robots, ou pas encore jugés), Écartés, Potentiel faible.
 
-Le fichier sort dans `data/prospects_<activite>_<ville>_<date>.xlsx`.
+## Le référentiel : sur quoi un site est jugé
+
+Quatre notes sur 100. Trois sont **mesurées par des règles fixes** (`prospection/audit.py`) : le même site obtient toujours la même note, et chaque point perdu est expliqué dans le rapport (« Détail du référentiel »). La quatrième, le design, est donnée par Claude sur une grille.
+
+| Note | Comment | Critères |
+|---|---|---|
+| **Design** | Claude, d'après les captures ordinateur et mobile, six critères notés de 0 à 5 | Mise en page · typographie et couleurs · images et logo · contenu et crédibilité · mobile · incitation à l'action |
+| **Performance** | Chargement réel dans Chromium, dans les conditions du test mobile de Google PageSpeed (4G lente, processeur ralenti 4 fois) | Affichage du contenu principal, LCP (40 pts, bon ≤ 2,5 s) · poids de la page (20, ≤ 1,5 Mo) · réponse du serveur, TTFB (15, ≤ 0,8 s) · stabilité de la mise en page, CLS (15, ≤ 0,1) · nombre de requêtes (10, ≤ 60) |
+| **SEO** | Lecture du code de l'accueil, de `robots.txt` et de `sitemap.xml` | Titre (12) · description (10) · H1 unique (10) · ville dans le titre ou le H1 (10) · 250 mots au moins (10) · HTTPS (8) · balise mobile (8) · textes alternatifs des images (8) · pas de `noindex` (6) · sitemap (5) · langue (4) · adresse canonique (4) · robots.txt (3) |
+| **GEO** | Ce qu'un moteur à IA (ChatGPT, Perplexity, Google AI Overviews) peut lire et citer | Données structurées schema.org (20) · fiche d'entreprise structurée avec coordonnées (15) · contenu lisible sans JavaScript (20) · robots d'IA non bloqués par robots.txt (15) · contenu en questions-réponses (10) · horaires, tarifs, adresse (5 chacun) · `llms.txt` (5) |
+
+Les seuils LCP, CLS et TTFB sont ceux de Google (Core Web Vitals). Le GEO n'a pas de norme officielle : la grille reprend ce qui rend un site lisible et citable par les IA, et le poids de chaque critère se change dans `audit.py`.
+
+Le **score** final du prospect est donné par Claude à partir de tout cela : le design d'abord, puis les trois notes mesurées, et l'intérêt commercial (entreprise indépendante, active, bien notée). Il sert à classer ; les quatre notes servent à argumenter.
+
+## Coût
+
+Environ **0,05 $ par site jugé** (deux images, le texte, le verdict). La dépense réelle est comptée d'après les tokens facturés, enregistrée dans la base et affichée à chaque lancement. Deux plafonds dans `config.yaml` : `budget.par_ville_usd` (20 $) et `budget.total_usd` (100 $, tous lancements confondus). Pour diviser le coût par deux, mets `ia.modele: claude-sonnet-5-5`.
 
 ## Fichiers
 
 | Fichier | Rôle |
 |---|---|
-| `prospect.py` | Ligne de commande |
-| `prospection/entreprises.py` | Étape 1 : API Recherche d'entreprises, exclusions |
-| `prospection/sites.py` | Étape 2 : recherche du site, validation, statut web |
-| `prospection/analyse.py` | Étape 3 : CMS, version, signaux de site daté, RDV, e-mail, PageSpeed |
-| `prospection/score.py` | Score sur 100 (règles) |
-| `prospection/agent_ia.py` | Étape 5 : agent IA de qualification (Claude Sonnet + recherche web) |
-| `prospection/export.py` | Excel (onglets Prospects et Résumé) |
-| `prospection/oppositions.py` | Liste d'opposition RGPD |
-| `prospection/cache.py`, `reseau.py` | Cache SQLite, pauses entre requêtes, reprises |
-| `activites.yaml` | « plombier » → `43.22A`, etc. (à compléter) |
-| `empreintes.yaml` | Empreintes des CMS, pages parking, prise de RDV (à compléter) |
-| `config.yaml` | Exclusions, débits, plafonds, seuils, pondération du score |
-| `oppositions.csv` | Entreprises à ne jamais recontacter (créé au premier usage) |
-| `cache.sqlite` | Cache local (supprimable, mais tu perds les quotas du mois et les verdicts de l'IA, qui sont payants) |
-
-## Comment ça marche
-
-**1. Entreprises.** API Recherche d'entreprises, filtrée sur les entreprises actives. On garde l'établissement **actif** situé dans la zone (le siège peut être ailleurs) : c'est son SIRET qui figure dans la colonne « SIRET ». Sont exclues : les entreprises sans établissement actif dans la zone, les entreprises **non diffusibles** (l'entrepreneur s'est opposé auprès de l'INSEE à l'utilisation de ses données par des tiers, l'API masque alors l'adresse par `[NON-DIFFUSIBLE]` : ne pas les prospecter), celles ayant plus de `max_etablissements` établissements ouverts, et celles dont le nom ou l'enseigne contient un mot de la liste `franchises` (en mots entiers : « cer » n'exclut pas « cercle »).
-
-**2. Site**, essayé dans cet ordre (colonne « Source du site ») :
-1. **Google Maps via SerpAPI** (si `SERPAPI_KEY`) : site, téléphone, note, nombre d'avis.
-2. **OpenStreetMap** (gratuit, ajouté en plus de ta liste) : lieux nommés à moins de 150 m de l'adresse, interrogés par lots de 25 entreprises. Donne parfois le site, la page Facebook ou le téléphone.
-3. **Devinette de domaine** : nom et enseigne sans accents ni forme juridique, avec ou sans articles, avec ou sans la ville, en `.fr` et `.com`. DNS d'abord, puis HTTP.
-4. **Brave Search** (si `BRAVE_API_KEY`) : `"nom" ville`, en ignorant les annuaires (liste `annuaires` dans `config.yaml`).
-
-**Validation** : un site deviné ou trouvé par moteur n'est retenu que si l'accueil, les mentions légales ou la page contact contiennent :
-- le **SIREN/SIRET** → confiance **forte** ;
-- le **téléphone** (venant de Google ou d'OSM) → **moyenne** ;
-- le **nom + le code postal** (avec au moins un mot distinctif, pas seulement « auto école ») → **faible**.
-
-Exemple réel : `autoecoledelareussite.fr` existe mais appartient à une homonyme de Fosses (95). Le site est rejeté.
-Un lien venant d'une fiche Google ou OSM est gardé même sans preuve, avec une confiance faible.
-
-**Statuts** : « Aucun site », « Facebook / Instagram seulement », « Site cassé (HTTP 404 / connexion impossible / page vide ou par défaut) », « Domaine expiré / DNS absent » (y compris les domaines parqués ou à vendre), « Site actif ».
-
-**3. Analyse** (sur la page déjà téléchargée, sans requête de plus) : CMS et gamme (`empreintes.yaml`), version, thème et page builder WordPress, HTTPS, viewport mobile, année du copyright, version de jQuery, Flash, mise en page en tableaux, `<title>`, meta description, temps de réponse, prise de RDV en ligne, formulaire, e-mail visible. PageSpeed mobile en option.
-`robots.txt` n'est pas lu : l'outil ne parcourt pas les sites, il fait au plus trois requêtes par site (accueil, mentions légales, contact), comme un visiteur.
-
-**4. Score** sur 100 (pondération dans `config.yaml`) : pas de site, Facebook seul, site cassé ou expiré : 80 à 85. Un site actif part de 25, plus les points de chaque signal de site daté, moins des points pour les constructeurs grand public (Wix, Jimdo…) et les sites modernes (Webflow, Next.js…). Bonus : bonne note Google avec beaucoup d'avis, création récente, pas de prise de RDV en ligne.
-
-**5. Qualification par l'IA** (si `ANTHROPIC_API_KEY`). Les prospects dont le score des règles atteint `ia.score_min` (40 par défaut), hors oppositions et franchises repérées, sont confiés à un agent **Claude Sonnet 5.5** qui utilise la recherche web et la lecture de pages d'Anthropic. Pour chaque entreprise, il cherche la fiche Google, le site, les pages Facebook / Instagram et les annuaires, ouvre le site s'il en trouve un et vérifie qu'il est bien le sien, regarde si l'entreprise est fermée ou appartient à un réseau, puis rend un verdict structuré :
-- **présence web réelle** (Aucun site, Facebook / Instagram seulement, Fiche annuaire seulement, Site cassé ou expiré, Site daté, Site correct, Site récent et soigné) et site vérifié ;
-- entreprise **active / fermée**, **franchise** ou non, téléphone et e-mail trouvés ;
-- **qualifié** ou **écarté**, **score sur 100** (il remplace celui des règles, gardé dans la colonne « Score des règles »), raison, constat sur le site et **angle d'approche** pour un premier message.
-
-L'agent reçoit le pré-diagnostic des règles comme indice : il rattrape surtout les faux « Aucun site » (sites que la devinette n'a pas trouvés) et écarte les entreprises fermées. Il tourne sur 4 entreprises à la fois (`ia.parallele`). Les verdicts sont gardés 180 jours (`ia.validite_jours`) : une entreprise déjà qualifiée ne coûte plus rien.
-**Coût** : environ 0,05 à 0,15 $ par entreprise (tokens + 10 $ / 1 000 recherches web) ; la moyenne réelle s'affiche dans les Réglages. La dépense est comptée dans le cache et l'agent s'arrête au plafond `ia.budget_mensuel_usd` (20 $ par mois par défaut). Modèle, effort, nombre de recherches et de pages par entreprise se règlent dans la section `ia` de `config.yaml`.
-
-**Reprise** : tout est en cache dans `cache.sqlite` (entreprise et analyse par SIREN, réponse par URL, appels d'APIs). Si tu interromps le script (Ctrl+C), les résultats déjà obtenus sont exportés. Relance la même commande : les entreprises déjà traitées ne sont pas refaites. Le cache expire après `cache_jours` (30 jours).
-
-## Sources et quotas (vérifiés en octobre 2026)
-
-| Source | Coût | Limites | Réglage |
-|---|---|---|---|
-| [API Recherche d'entreprises](https://recherche-entreprises.api.gouv.fr/docs/) | Gratuite, sans clé | 7 req/s par IP ; 25 résultats par page ; 10 000 résultats max par recherche | 0,2 s entre requêtes, reprise sur 429 avec `Retry-After` |
-| [geo.api.gouv.fr](https://geo.api.gouv.fr) (ville → code commune) | Gratuite, sans clé | — | 0,1 s |
-| [OpenStreetMap Overpass](https://wiki.openstreetmap.org/wiki/Overpass_API) | Gratuite, sans clé | Serveur public partagé, souvent lent (≈ 30 s par requête) | 1 requête par lot de 25 entreprises, 5 s de pause |
-| [SerpAPI](https://serpapi.com/pricing) Google Maps | Plan gratuit : **250 recherches / mois** (≈ 50 / heure) | 1 recherche par entreprise | Plafond `serpapi.plafond_mensuel: 200`, compté dans le cache, réponses en cache |
-| [Brave Search API](https://brave.com/search/api/) | **Plus de plan gratuit illimité** : 5 $ de crédit / mois (≈ 1 000 requêtes), carte bancaire et mention de Brave exigées | 1 req/s | Plafond `brave.plafond_mensuel: 900` |
-| [PageSpeed Insights](https://developers.google.com/speed/docs/insights/v5/get-started) | Gratuite avec une clé Google Cloud | 25 000 req / jour | Lent (≈ 15 à 30 s par site) |
-| [API Claude](https://platform.claude.com/docs/en/about-claude/pricing) (agent IA) | Payante à l'usage : Sonnet 5.5 à 2 $ / 10 $ par million de tokens, recherche web 10 $ / 1 000 | Limites de débit du compte | Plafond `ia.budget_mensuel_usd: 20`, 5 recherches et 4 pages max par entreprise |
-| Pappers | Payante (100 crédits offerts, 1 crédit par fiche) | — | **Non intégrée**, voir plus bas |
-
-Le code NAF utilisé est la nomenclature NAF rév. 2 : l'API renvoie aussi le nouveau code NAF 2025, qui n'est pas encore utilisé pour filtrer.
-
-### Pappers : ce qu'elle apporterait en plus
-
-L'API de l'État fournit déjà : identité, adresse, NAF, dirigeants, tranche d'effectif, nombre d'établissements, et le chiffre d'affaires et le résultat quand les comptes sont publiés.
-Pappers ajouterait surtout le **téléphone**, l'**e-mail** et le **site web** déclarés quand elle les a (sur pappers.fr, ces champs ne sont visibles que connecté), plus l'effectif exact et le capital.
-Ces champs restent à confirmer par un appel test avec une clé avant l'intégration. Avec 100 crédits, on enrichit 100 fiches au plus.
+| `prospect.py` | La commande |
+| `app.py`, `lancer.command` | L'interface |
+| `prospection/collecte.py` | Étape 1 : OpenStreetMap, Google Maps, secours par Claude |
+| `prospection/visite.py` | Étape 2 : navigateur, captures, indices, coordonnées |
+| `prospection/audit.py` | Le référentiel mesuré : performance, SEO, GEO |
+| `prospection/jugement.py` | Étape 3 : grille de design et verdict de Claude, budget |
+| `prospection/potentiel.py` | Étape 4 : intérêt d'un site pour le métier, santé de l'entreprise, registre |
+| `prospection/rapport.py` | Étape 5 : page web et Excel |
+| `prospection/base.py` | Base SQLite : candidats, dépenses, quotas, suivi |
+| `config.yaml` | Budgets, modèle, métiers cherchés, exclusions |
+| `empreintes.yaml` | Empreintes des constructeurs de sites et des pages parking |
+| `prospection.sqlite` | Tout ce qui a été trouvé et payé, et ton suivi : **ne le supprime pas** |
 
 ## RGPD et règles de la prospection B2B
 
-L'outil ne traite que des données d'entreprises issues de sources publiques (registres de l'État, OpenStreetMap, sites des entreprises, fiches Google). Mais les **noms de dirigeants** et les **entreprises individuelles** (dont le nom est celui d'une personne) sont des données personnelles : le RGPD s'applique.
+L'outil ne traite que des informations publiées par les entreprises elles-mêmes (leur site, leur fiche Google, OpenStreetMap). Les noms de personnes et les entreprises individuelles restent des données personnelles : le RGPD s'applique.
 
 - **Base légale** : intérêt légitime (proposer un service en rapport avec l'activité de l'entreprise).
-- **Agent IA** : l'outil envoie à Anthropic le nom, l'enseigne, l'adresse, l'activité et le SIREN de l'entreprise, ainsi que le pré-diagnostic, mais **pas les noms des dirigeants**. Les entreprises en opposition ne sont jamais envoyées. L'agent ne consulte que des pages publiques.
-- **Information** : dès le premier contact, dis qui tu es, d'où viennent les coordonnées (« annuaire public des entreprises / votre site ») et comment s'opposer.
-- **Opposition** : quand une entreprise refuse, lance aussitôt `--opposition <SIREN>`. Elle reste dans les exports, grisée, avec la mention « OUI — ne pas contacter », et n'est plus analysée. `oppositions.csv` est hors du cache : ne le supprime jamais.
-- **E-mail B2B** (art. L34-5 du CPCE, doctrine CNIL) : pas besoin de consentement préalable si le message est **en rapport avec la profession** du destinataire (un site web pour une auto-école, oui). Chaque e-mail doit identifier l'expéditeur et contenir un **lien ou moyen de désinscription** simple et gratuit. Préfère les adresses génériques (`contact@`) aux adresses nominatives.
-- **Téléphone** : les appels B2B vers une ligne professionnelle restent possibles sans consentement. Depuis le 11 août 2026, le démarchage téléphonique des **particuliers** exige leur accord préalable (loi du 30 juin 2025 contre les fraudes aux aides publiques). Pour un entrepreneur individuel joint sur un mobile personnel, la frontière est floue : privilégie la ligne de l'entreprise.
-- **Durée de conservation** : supprime les prospects qui n'ont pas répondu au bout de **3 ans** après le dernier contact (recommandation CNIL).
-- Ne revends ni ne partage ces fichiers.
+- **Ce qui part chez Anthropic** : le nom, l'activité, l'adresse et le site de l'entreprise, avec les captures et le texte de sa page d'accueil. Uniquement des pages publiques.
+- **Information** : dès le premier contact, dis qui tu es, d'où viennent les coordonnées (« votre site », « votre fiche Google ») et comment s'opposer.
+- **Opposition** : quand une entreprise refuse, passe-la en « Opposition » dans l'interface. Elle disparaît des rapports et n'est plus jamais analysée.
+- **E-mail B2B** (art. L34-5 du CPCE, doctrine CNIL) : pas de consentement préalable si le message est en rapport avec la profession du destinataire. Chaque e-mail identifie l'expéditeur et contient un moyen simple de se désinscrire. Préfère les adresses génériques (`contact@`).
+- **Téléphone** : privilégie la ligne de l'entreprise. Depuis le 11 août 2026, le démarchage téléphonique des particuliers exige leur accord préalable ; pour un entrepreneur individuel joint sur son mobile personnel, la frontière est floue.
+- **Conservation** : supprime les prospects sans réponse au bout de 3 ans. Ne revends ni ne partage ces fichiers.
 
 ## Limites connues
 
-- Sans clé SerpAPI ni Brave, la recherche repose sur OSM et la devinette : « Aucun site » est alors plus incertain (confiance faible ou moyenne). Avec SerpAPI, la fiche Google confirme l'absence de site.
-- L'analyse ne lit que l'accueil (et les mentions légales ou la page contact pour la validation) : un formulaire placé sur `/contact` peut échapper à la colonne « Formulaire ».
-- Une franchise peut passer le filtre si son nom légal ne la trahit pas (ex. une « CER » immatriculée sous un autre nom) : complète la liste `franchises`.
+- Une entreprise absente d'OpenStreetMap et des 20 premiers résultats Google Maps de son métier n'est pas vue. Pour creuser, passe `google_maps.pages_par_metier` à 2 ou ajoute des métiers.
+- Le jugement et l'audit portent sur la page d'accueil : un site dont seules les pages intérieures sont ratées peut passer pour correct.
+- La performance est mesurée une fois, depuis ton ordinateur, pendant que d'autres sites se chargent : elle est indicative, à quelques dixièmes de seconde près. Pour un chiffre à montrer au client, refais le test sur PageSpeed Insights.
+- Le SEO mesuré est le SEO « sur la page ». Le classement réel dans Google et la présence réelle dans les réponses des IA ne sont pas testés.
+- Les sites qui bloquent les robots (HTTP 403) ne sont pas jugés : ils sont listés dans « À voir à la main ».
+- « Sans site » veut dire « pas de site sur la fiche Google Maps » : vérifie d'une recherche avant d'appeler. Seules les entreprises sorties dans les 20 premiers résultats de leur métier sont vues.
+- La santé d'une entreprise est estimée, pas prouvée : la plupart des petites entreprises ne publient pas leurs comptes, et une entreprise trouvée seulement sur OpenStreetMap (sans avis Google) dont le SIRET n'est pas sur le site est écartée faute de données. Elle reste dans l'onglet « Potentiel faible ».
